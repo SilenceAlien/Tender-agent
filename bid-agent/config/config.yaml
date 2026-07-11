@@ -1,0 +1,37 @@
+# ── 标书制作智能体 — 默认配置 ────────────────────────────────────────
+# 本文件包含所有可配置项的默认值。
+# 使用环境变量或 .env 文件可覆盖任意字段（前缀 BID_）。
+
+deployment:
+  mode: local  # local / saas / onpremise
+
+llm:
+  default_provider: deepseek
+  default_model: deepseek-v4-pro
+  task_routing:  # 任务级覆盖（可选）
+    quality_checker:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+
+retrieval:
+  embedding_model: text-embedding-3-small
+  embedding_dim: 1536
+  reranker_model: BAAI/bge-reranker-v2-m3
+  top_k_retrieval: 8
+  top_k_rerank: 5
+
+generation:
+  max_rounds: 3
+  default_temperature: 0.3
+  max_section_tokens: 4096
+
+document:
+  chunk_size: 1000
+  chunk_overlap: 200
+  supported_formats: [pdf, docx, doc]
+
+paths:
+  upload_dir: data/uploads
+  index_dir: data/faiss_index
+  export_dir: data/exports
+  template_dir: templates

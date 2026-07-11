@@ -1,0 +1,11 @@
+{
+  "type": "劳务管理服务类",
+  "source": "2026年广州铁道车辆有限公司劳务管理服务采购（技术标）v2.pdf",
+  "note": "基于真实中标标书脱敏生成，敏感数据用【待填写：具体说明】留白",
+  "sections": [
+    "sec1_bid_letter_一、投标函.txt",
+    "sec7_service_plan_七、服务方案.txt",
+    "sec8_emergency_八、应急保障方案.txt"
+  ],
+  "total_chars": 4135
+}

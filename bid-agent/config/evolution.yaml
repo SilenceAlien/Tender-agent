@@ -1,0 +1,18 @@
+# Agent 进化配置
+# 控制 Prompt 进化 + 指标追踪的行为
+
+evolution:
+  # ── Prompt 进化 ──
+  prompt_evolution:
+    enabled: true                       # 是否启用
+    min_score_threshold: 0.7            # 最低入库评分 (0.0-1.0)
+    max_candidates: 3                   # 每次检索最多返回几个候选
+    injection_mode: prepend             # prepend | append | replace
+    only_pass: true                     # 仅 PASS 时入库
+
+  # ── 指标追踪 ──
+  metrics:
+    enabled: true
+    track_per_section: true             # 按章节追踪
+    track_per_bid_type: true            # 按招标类型追踪
+    max_records_per_section: 1000       # 每章节最大记录数（防止膨胀）
