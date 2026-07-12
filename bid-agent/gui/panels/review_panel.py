@@ -315,6 +315,119 @@ def render_review_panel():
             else:
                 st.markdown(f"- ⚠️ {issue}")
 
+    # ── R02 fix: 人工审核裁决 ──────────────────────────────────────────
+    # Previously the pipeline paused at HumanReviewGate (pending) but
+    # review_panel never called resume_after_review(), making the
+    # approved→DocumentAssembler and rejected→FeedbackProcessor routes
+    # dead code.  Now we provide explicit approve/reject buttons.
+    review_status = result.get("review_status", "")
+    if review_status == "pending" or (not review_status and sections):
+        st.divider()
+        st.markdown("### ✅ 人工审核")
+        st.caption("审核通过后将自动生成 DOCX 文档；驳回将触发修改循环。")
+
+        col_approve, col_reject = st.columns(2)
+
+        with col_approve:
+            if st.button("✅ 通过审核", use_container_width=True, type="primary"):
+                from core.nodes.human_review_gate import resume_after_review
+
+                # Apply approved verdict to state
+                verdict_update = resume_after_review(result, "approved")
+                result.update(verdict_update)
+                result["review_status"] = "approved"
+
+                # Run DocumentAssembler to generate DOCX
+                with st.spinner("📄 正在生成 DOCX 文档..."):
+                    from pathlib import Path
+
+                    from core.nodes.doc_assembler import doc_assembler
+
+                    # Use persistent directory so export_path stays valid
+                    export_dir = Path.home() / ".bid-agent" / "exports"
+                    export_dir.mkdir(parents=True, exist_ok=True)
+                    assembly = doc_assembler(result, export_dir=str(export_dir))
+                    export_path = assembly.get("export_path", "")
+                    if export_path and Path(export_path).exists():
+                        # Store for export panel download
+                        st.session_state["approved_export_path"] = export_path
+                        result["export_path"] = export_path
+                        with open(export_path, "rb") as f:
+                            st.session_state["approved_docx_bytes"] = f.read()
+                        st.success("✅ 审核通过！DOCX 文档已生成。")
+                        st.info("📥 请前往「导出交付」标签页下载文档")
+                    else:
+                        st.error("文档生成失败，请检查日志")
+
+                st.session_state["pipeline_result"] = result
+                st.rerun()
+
+        with col_reject:
+            if st.button("❌ 驳回修改", use_container_width=True):
+                st.session_state["show_reject_form"] = True
+
+        # Rejection form (expands when "驳回修改" is clicked)
+        if st.session_state.get("show_reject_form"):
+            with st.container(border=True):
+                st.markdown("**驳回意见**")
+                reject_comments = st.text_area(
+                    "请输入修改意见（将作为反馈传给生成器）",
+                    height=100,
+                    key="reject_comments_input",
+                )
+                col_confirm, col_cancel = st.columns(2)
+                with col_confirm:
+                    if st.button("确认驳回", use_container_width=True, type="primary"):
+                        if not reject_comments.strip():
+                            st.warning("请输入驳回意见")
+                        else:
+                            from core.nodes.human_review_gate import resume_after_review
+
+                            # Apply rejected verdict with comments
+                            comments_list = [c.strip() for c in reject_comments.split("\n") if c.strip()]
+                            verdict_update = resume_after_review(result, "rejected", comments_list)
+                            result.update(verdict_update)
+                            result["review_status"] = "rejected"
+                            st.session_state["pipeline_result"] = result
+                            st.session_state["show_reject_form"] = False
+
+                            # Re-invoke generation graph to trigger feedback loop
+                            with st.spinner("🔄 正在根据审核意见重新生成..."):
+                                from core.graph import build_generation_graph
+
+                                llm_fns = st.session_state.get("pipeline_llm_fns", {})
+                                generation_graph = build_generation_graph(llm_fns=llm_fns)
+                                phase2_state = {**result}
+                                # Clear review_status so HumanReviewGate returns
+                                # "pending" after revision, not "rejected" again.
+                                # If we don't clear it, HumanReviewGate sees the
+                                # stale "rejected" verdict and loops until max_rounds.
+                                phase2_state["review_status"] = ""
+                                new_result = generation_graph.invoke(phase2_state)
+                                st.session_state["pipeline_result"] = new_result
+
+                            st.success("✅ 已根据审核意见重新生成，请审阅更新后的内容")
+                            st.rerun()
+
+                with col_cancel:
+                    if st.button("取消", use_container_width=True):
+                        st.session_state["show_reject_form"] = False
+                        st.rerun()
+
+    elif review_status == "approved":
+        st.divider()
+        st.markdown("### ✅ 人工审核 — 已通过")
+        docx_bytes = st.session_state.get("approved_docx_bytes")
+        if docx_bytes:
+            st.download_button(
+                "⬇️ 下载 DOCX 文件",
+                docx_bytes,
+                file_name="标书.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        else:
+            st.info("📥 请前往「导出交付」标签页下载文档")
+
     # Feedback form
     st.divider()
     render_feedback_form(result)

@@ -1,0 +1,32 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2026-07-11",
+  "description": "跨子类型通用内容 — 仅格式固定型章节可进入 (Jaccard≥0.8 + 章节白名单)",
+  "files": [
+    {
+      "path": "chapters/sec1_bid_letter_通用投标函.txt",
+      "scope": "all",
+      "chapter_key": "sec1_bid_letter",
+      "jaccard_score": 0.92,
+      "verified_subtypes": ["HRO", "食堂餐饮", "工业生产线"],
+      "note": "投标函 — 格式固定, 跨子类型几乎一致"
+    },
+    {
+      "path": "chapters/sec3_authorization_通用授权委托书.txt",
+      "scope": "all",
+      "chapter_key": "sec3_authorization",
+      "jaccard_score": 0.95,
+      "verified_subtypes": ["HRO", "食堂餐饮", "工业生产线"],
+      "note": "授权委托书 — 格式固定, 跨子类型几乎一致"
+    }
+  ],
+  "allowed_chapter_keys": [
+    "sec1_bid_letter",
+    "sec2_legal_rep",
+    "sec3_authorization",
+    "sec4_deposit",
+    "sec5_deviation",
+    "ch1_letter",
+    "ch2_authorization"
+  ]
+}

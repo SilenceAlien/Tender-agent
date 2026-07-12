@@ -25,7 +25,7 @@ import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

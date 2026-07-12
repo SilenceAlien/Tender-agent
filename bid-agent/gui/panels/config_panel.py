@@ -6,9 +6,11 @@ from core.config_persistence import load_config, save_config
 
 # ── DeepSeek 模型信息（来源: https://api-docs.deepseek.com/zh-cn/） ──
 
+# N03 fix: use real DeepSeek API model names
+# deepseek-chat = V3 (general purpose), deepseek-reasoner = R1 (reasoning)
 DS_MODELS = [
-    {"id": "deepseek-v4-pro",   "label": "DeepSeek-V4-Pro（推荐·最强）", "help": "1M上下文 | 高性能推理 | ¥3/6 百万tokens"},
-    {"id": "deepseek-v4-flash", "label": "DeepSeek-V4-Flash（快速·实惠）", "help": "1M上下文 | 支持思考/非思考 | ¥1/2 百万tokens"},
+    {"id": "deepseek-chat",     "label": "DeepSeek-V3 Chat（推荐·通用）", "help": "64K上下文 | 通用对话 | ¥1/2 百万tokens"},
+    {"id": "deepseek-reasoner", "label": "DeepSeek-R1 Reasoner（深度推理）", "help": "64K上下文 | 深度思考模式 | ¥4/16 百万tokens"},
 ]
 
 ALL_DS = [m["id"] for m in DS_MODELS]
@@ -25,7 +27,7 @@ def _init_session_config():
 
     cfg = load_config()
     st.session_state["config_provider"] = cfg.get("provider", "deepseek")
-    st.session_state["config_model"] = cfg.get("model", "deepseek-v4-flash")
+    st.session_state["config_model"] = cfg.get("model", "deepseek-chat")
     st.session_state["config_api_keys"] = cfg.get("api_keys", {})
     st.session_state["config_node_overrides"] = cfg.get("node_overrides", {})
     # BUG-12 fix: read openai_model from its own config field, not api_keys
@@ -37,7 +39,7 @@ def _save_to_disk():
     """Persist current session state to ~/.bid-agent/config.json."""
     save_config({
         "provider": st.session_state.get("config_provider", "deepseek"),
-        "model": st.session_state.get("config_model", "deepseek-v4-flash"),
+        "model": st.session_state.get("config_model", "deepseek-chat"),
         "api_keys": st.session_state.get("config_api_keys", {}),
         "node_overrides": st.session_state.get("config_node_overrides", {}),
         # BUG-12 fix: store openai_model separately, not in api_keys
@@ -122,12 +124,103 @@ def render_config_panel():
     st.session_state["config_openai_model"] = oa_model
 
     st.session_state["config_api_keys"] = api_keys
-    st.session_state["config_provider"] = "deepseek"
-    st.session_state["config_model"] = ds_model
+
+    # ── R01 fix: 主用 Provider 选择器 ────────────────────────────────
+    # N11 fix was incomplete: "deepseek" if ds_model else ... always
+    # evaluated to "deepseek" because ds_model (a selectbox) is never
+    # empty.  This caused users who only configured OpenAI to have all
+    # nodes fall back to mock (provider=deepseek, but no deepseek key).
+    #
+    # Now the user explicitly selects their primary provider.  The
+    # provider and model are derived from the selection, not from a
+    # broken heuristic.
+    st.markdown("---")
+    st.markdown("**主用 LLM 服务商**")
+    primary_options = []
+    if has_ds:
+        primary_options.append("DeepSeek")
+    if has_oa:
+        primary_options.append("OpenAI")
+    if not primary_options:
+        primary_options = ["DeepSeek", "OpenAI"]
+
+    # Determine current selection from saved config
+    current_provider = st.session_state.get("config_provider", "deepseek")
+    default_idx = 0
+    if current_provider == "openai" and "OpenAI" in primary_options:
+        default_idx = primary_options.index("OpenAI")
+    elif current_provider == "deepseek" and "DeepSeek" in primary_options:
+        default_idx = primary_options.index("DeepSeek")
+
+    primary_choice = st.radio(
+        "选择主用服务商（未配置 Key 的服务商不会出现在列表中）",
+        options=primary_options,
+        index=default_idx,
+        horizontal=True,
+        key="primary_provider_radio",
+        label_visibility="collapsed",
+    )
+
+    if primary_choice == "DeepSeek":
+        st.session_state["config_provider"] = "deepseek"
+        st.session_state["config_model"] = ds_model
+    else:
+        st.session_state["config_provider"] = "openai"
+        st.session_state["config_model"] = oa_model
 
     # Persist to disk automatically — avoid "forgot to save" failures
     # when the user switches to the generation tab.
     _save_to_disk()
+
+    # ── N04: Node-level model overrides ──────────────────────────────
+    st.divider()
+    with st.expander("🔧 节点级模型配置（高级）", expanded=False):
+        st.caption(
+            "为不同节点配置不同模型（如生成用 DeepSeek-Chat、质检用 GPT-4o）。\n"
+            "留空 = 使用全局默认模型。"
+        )
+        node_overrides = st.session_state.get("config_node_overrides", {})
+
+        # Nodes that benefit from distinct model selection
+        node_options = {
+            "SectionGenerator": "章节生成（需强生成能力）",
+            "QualityChecker": "质量检查（需分析能力）",
+            "ScoreSimulator": "评分模拟（需推理能力）",
+            "ReqExtractor": "需求提取（需理解能力）",
+        }
+
+        all_models = [("deepseek", m, ALL_DS_LABELS.get(m, m)) for m in ALL_DS]
+        all_models += [("openai", m, m) for m in OA_MODELS]
+        model_ids = [f"{p}/{m}" for p, m, _ in all_models]
+        model_labels = {f"{p}/{m}": f"{label} ({p})" for p, m, label in all_models}
+
+        for node_name, node_desc in node_options.items():
+            current_raw = node_overrides.get(node_name, "")
+            # Handle both dict (new format) and string (legacy) for backward compat
+            if isinstance(current_raw, dict):
+                current = f"{current_raw.get('provider', '')}/{current_raw.get('model', '')}"
+            else:
+                current = current_raw
+            try:
+                idx = model_ids.index(current) if current in model_ids else 0
+            except ValueError:
+                idx = 0
+
+            selected = st.selectbox(
+                f"{node_name} — {node_desc}",
+                options=[""] + model_ids,
+                format_func=lambda x: "默认（全局）" if x == "" else model_labels.get(x, x),
+                index=0 if not current else idx + 1,
+                key=f"node_override_{node_name}",
+            )
+            if selected:
+                provider, model = selected.split("/", 1)
+                node_overrides[node_name] = {"provider": provider, "model": model}
+            else:
+                node_overrides.pop(node_name, None)
+
+        st.session_state["config_node_overrides"] = node_overrides
+        _save_to_disk()
 
     # ── Buttons ─────────────────────────────────────────────────────────
     st.divider()

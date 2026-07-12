@@ -16,7 +16,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "provider": "deepseek",
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-chat",  # N03 fix: real DeepSeek model name
     "api_keys": {},
     "node_overrides": {},
     "openai_model": "gpt-4o-mini",  # BUG-12 fix: stored separately, not in api_keys

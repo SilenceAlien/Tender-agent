@@ -58,11 +58,13 @@ _CONTEXT_PATTERNS = {
 def _check_format_compliance(sections: dict[str, str], format_rules: dict) -> list[dict]:
     """Check format-related compliance issues.
 
-    For text-based sections we can't fully verify page margins/fonts (that
-    requires the rendered DOCX), but we can check structural format rules:
+    N07 fix: now checks format_rules for structural compliance, not just
+    content length.  While we can't verify page margins/fonts without rendering
+    the DOCX (that happens in DocumentAssembler), we can check:
     - Section count meets minimum
     - Each section has adequate length
     - Required sections are present (投标函, 服务方案, etc.)
+    - format_rules declares required formatting fields
     """
     issues: list[dict] = []
 
@@ -73,6 +75,30 @@ def _check_format_compliance(sections: dict[str, str], format_rules: dict) -> li
                 "item": "内容过短",
                 "section": name,
                 "detail": f"仅 {len(content)} 字，建议至少 200 字",
+                "severity": "medium",
+            })
+
+    # N07: Check that format_rules declares essential formatting fields
+    if format_rules:
+        essential_fields = ["page_margin", "font", "line_spacing"]
+        missing_fields = [f for f in essential_fields if not format_rules.get(f)]
+        if missing_fields:
+            issues.append({
+                "item": "格式规则缺失",
+                "section": "全局",
+                "detail": (
+                    f"format_rules 中缺少必要字段：{', '.join(missing_fields)}。"
+                    f"这些字段在 DocumentAssembler 中用于设置页边距、字体、行距。"
+                ),
+                "severity": "low",
+            })
+
+        # Check seal requirement is declared
+        if not format_rules.get("seal_requirement"):
+            issues.append({
+                "item": "签章要求未声明",
+                "section": "全局",
+                "detail": "format_rules 中未声明签章要求（seal_requirement），标书须加盖公章",
                 "severity": "medium",
             })
 

@@ -21,7 +21,6 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -61,25 +60,55 @@ class ReferenceRetriever:
         self._cache: dict[str, str] = {}  # query → result cache
 
     def _find_reference_files(
-        self, bid_type: str, section_key: str
+        self, bid_type: str, section_key: str, bid_subtype: str = ""
     ) -> list[Path]:
         """Find reference .txt files matching the bid type and section key.
 
-        Looks in knowledge_base/{bid_type}/范文/ for files whose names
-        contain the section_key (e.g. sec7_service_plan).
+        95+优化 补强二: 当 bid_subtype 存在时, 优先搜索子类型分区的 chunks 目录,
+        其次搜索 _shared/ 分区, 最后回退到现有的 范文/ 目录.
+
+        搜索优先级:
+            1. knowledge_base/{kb_type}/{bid_subtype}/chunks/  (子类型分区)
+            2. knowledge_base/{kb_type}/_shared/chapters/      (通用共享)
+            3. knowledge_base/{kb_type}/范文/                   (兼容现有)
         """
         if not self.kb_root.exists():
             return []
 
+        # 归一化 bid_type → KB 目录名: 劳务管理服务类/劳务外包类 都映射到 劳务外包类
+        kb_type = "劳务外包类" if ("劳务" in bid_type) else bid_type
+
         candidates: list[Path] = []
 
-        # Try exact bid_type directory first
-        type_dir = self.kb_root / bid_type / "范文"
-        if type_dir.exists():
-            # Files named like sec7_service_plan_七、服务方案.txt
-            for f in type_dir.glob("*.txt"):
-                if section_key in f.name:
-                    candidates.append(f)
+        # 95+优化: 优先搜索子类型分区 chunks
+        if bid_subtype:
+            subtype_dir = self.kb_root / kb_type / bid_subtype / "chunks"
+            if subtype_dir.exists():
+                for f in subtype_dir.glob("*.txt"):
+                    if section_key in f.name:
+                        candidates.append(f)
+
+        # 95+优化: 搜索 _shared 分区 (仅格式固定型章节)
+        if not candidates and bid_subtype:
+            try:
+                from core.retrieval.subtype_router import is_chapter_allowed_in_shared
+                if is_chapter_allowed_in_shared(section_key):
+                    shared_dir = self.kb_root / kb_type / "_shared" / "chapters"
+                    if shared_dir.exists():
+                        for f in shared_dir.glob("*.txt"):
+                            if section_key in f.name:
+                                candidates.append(f)
+            except Exception:
+                pass
+
+        # Try exact bid_type directory first (existing behavior)
+        if not candidates:
+            type_dir = self.kb_root / kb_type / "范文"
+            if type_dir.exists():
+                # Files named like sec7_service_plan_七、服务方案.txt
+                for f in type_dir.glob("*.txt"):
+                    if section_key in f.name:
+                        candidates.append(f)
 
         # Fallback: search all subdirectories if exact match found nothing
         if not candidates:
@@ -154,7 +183,8 @@ class ReferenceRetriever:
         return "\n\n".join(result_parts) if result_parts else text[:max_chars]
 
     def retrieve_for_section(
-        self, section_key: str, bid_type: str = "", query_hint: str = ""
+        self, section_key: str, bid_type: str = "", query_hint: str = "",
+        bid_subtype: str = "",
     ) -> str:
         """Retrieve a reference snippet for a specific section.
 
@@ -162,11 +192,12 @@ class ReferenceRetriever:
             section_key: e.g. "sec7_service_plan" or "ch3_service"
             bid_type: e.g. "劳务管理服务类" — narrows the search directory
             query_hint: Additional keywords to guide snippet selection
+            bid_subtype: 95+优化 补强二 — e.g. "HRO" narrows to subtype partition
 
         Returns:
             Reference text snippet (may be empty if no references found).
         """
-        cache_key = f"{section_key}|{bid_type}|{query_hint}"
+        cache_key = f"{section_key}|{bid_type}|{bid_subtype}|{query_hint}"
         if cache_key in self._cache:
             return self._cache[cache_key]
 
@@ -186,7 +217,7 @@ class ReferenceRetriever:
                 logger.warning(f"Semantic retrieval failed: {e} — falling back to keyword")
 
         # Keyword-based retrieval (fallback or primary)
-        files = self._find_reference_files(bid_type, section_key)
+        files = self._find_reference_files(bid_type, section_key, bid_subtype=bid_subtype)
         if not files:
             self._cache[cache_key] = ""
             return ""

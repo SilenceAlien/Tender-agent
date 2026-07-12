@@ -348,7 +348,6 @@ def _check_consistency(
 
     # Use similarity comparison so "广州华南人力" and "广州华南人力资源"
     # are recognized as the same company (ratio >= 0.8)
-    import difflib
     core_names = [_core_name(n) for n in all_names]
     unique_cores: list[str] = []
     for core in core_names:

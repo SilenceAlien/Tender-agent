@@ -11,6 +11,10 @@ Checks:
     - Monetary amounts consistent
     - Document composition: items declared in bid letter must have
       corresponding sections in the generated document
+    - N05: Contract deviation — forbidden institutions/industries from
+      project_contract must not appear in generated sections
+    - N06: Technical parameter consistency — response time, service hours
+      etc. must be consistent across chapters
 
 Contract:
     def cross_reference_checker(state: AgentState) -> dict
@@ -239,6 +243,107 @@ def _check_document_composition_consistency(sections: dict[str, str]) -> list[di
     return issues
 
 
+# ── N05: Contract deviation check ─────────────────────────────────────
+
+
+def _check_contract_deviation(
+    sections: dict[str, str],
+    project_contract: dict,
+) -> list[dict]:
+    """N05: Check that forbidden institutions/industries from the project
+    contract do not appear in generated sections.
+
+    PRD 4.2.2 验收标准 2: 拼凑残留（其他项目的机构名错误出现）需被检测。
+    """
+    issues: list[dict] = []
+
+    forbidden_institutions = project_contract.get("forbidden_institutions", [])
+    forbidden_industries = project_contract.get("forbidden_industries", [])
+
+    for section_name, content in sections.items():
+        for inst in forbidden_institutions:
+            if inst and inst in content:
+                issues.append({
+                    "type": "contract_forbidden_institution",
+                    "field": "禁止机构名",
+                    "detail": (
+                        f"章节「{section_name}」中出现了契约禁止的机构名「{inst}」，"
+                        f"可能是拼凑残留，请检查并删除。"
+                    ),
+                    "section": section_name,
+                    "severity": "critical",
+                })
+
+        for ind in forbidden_industries:
+            if ind and ind in content:
+                issues.append({
+                    "type": "contract_forbidden_industry",
+                    "field": "禁止行业",
+                    "detail": (
+                        f"章节「{section_name}」中出现了契约禁止的行业提及「{ind}」，"
+                        f"可能与本项目无关，请检查。"
+                    ),
+                    "section": section_name,
+                    "severity": "high",
+                })
+
+    return issues
+
+
+# ── N06: Technical parameter consistency check ────────────────────────
+
+
+# Common technical parameter patterns: (label, regex)
+_TECH_PARAM_PATTERNS = [
+    ("响应时间", re.compile(r"响应时间[^\d]{0,5}(\d+)\s*(?:秒|分钟|min|s)")),
+    ("服务时间", re.compile(r"服务时间[^\d]{0,5}(\d+)\s*(?:小时|h)")),
+    ("到达现场", re.compile(r"到达现场[^\d]{0,5}(\d+)\s*(?:小时|分钟|min|h)")),
+    ("故障恢复", re.compile(r"故障恢复[^\d]{0,5}(\d+)\s*(?:小时|分钟|min|h)")),
+    ("保修期", re.compile(r"保修期[^\d]{0,5}(\d+)\s*(?:年|个月|月)")),
+    ("服务期", re.compile(r"服务期[^\d]{0,5}(\d+)\s*(?:年|个月|月)")),
+]
+
+
+def _check_tech_parameter_consistency(sections: dict[str, str]) -> list[dict]:
+    """N06: Check that technical parameters are consistent across chapters.
+
+    PRD 4.2.2: 检查技术参数跨章节一致（技术方案章 vs 服务方案章）。
+    Scans for common technical parameters (response time, service hours, etc.)
+    and flags if different chapters report different values.
+    """
+    issues: list[dict] = []
+
+    # Collect parameter values per section
+    param_values: dict[str, dict[str, list[str]]] = {}  # {param_name: {section: [values]}}
+
+    for section_name, content in sections.items():
+        for param_name, pattern in _TECH_PARAM_PATTERNS:
+            matches = pattern.findall(content)
+            if matches:
+                param_values.setdefault(param_name, {})[section_name] = matches
+
+    # Check for inconsistencies
+    for param_name, section_map in param_values.items():
+        if len(section_map) < 2:
+            continue  # Need at least 2 sections to compare
+        # Get the first value from each section
+        section_values = {s: vals[0] for s, vals in section_map.items()}
+        unique_values = set(section_values.values())
+        if len(unique_values) > 1:
+            issues.append({
+                "type": "tech_parameter_mismatch",
+                "field": param_name,
+                "detail": (
+                    f"技术参数「{param_name}」在不同章节中取值不一致："
+                    f"{section_values}"
+                ),
+                "sections": list(section_values.keys()),
+                "severity": "medium",
+            })
+
+    return issues
+
+
 # ── LangGraph Node ─────────────────────────────────────────────────────
 
 
@@ -256,6 +361,7 @@ def cross_reference_checker(
         {cross_ref_report: {verdict, inconsistencies}, node_status}
     """
     sections = state.get("sections", {})
+    project_contract = state.get("project_contract", {})
 
     if not sections or len(sections) < 2:
         logger.info("CrossReferenceChecker: need ≥2 sections for cross-checking")
@@ -276,9 +382,13 @@ def cross_reference_checker(
     inconsistencies.extend(_check_amount_consistency(sections))
     inconsistencies.extend(_check_date_consistency(sections))
     inconsistencies.extend(_check_document_composition_consistency(sections))
+    # N05: contract deviation check
+    inconsistencies.extend(_check_contract_deviation(sections, project_contract))
+    # N06: technical parameter consistency check
+    inconsistencies.extend(_check_tech_parameter_consistency(sections))
 
-    # Verdict: FAIL on high-severity issues (amount mismatch), PASS otherwise
-    has_high = any(i.get("severity") == "high" for i in inconsistencies)
+    # Verdict: FAIL on high/critical-severity issues
+    has_high = any(i.get("severity") in ("high", "critical") for i in inconsistencies)
     verdict = "FAIL" if has_high else "PASS"
 
     logger.info(

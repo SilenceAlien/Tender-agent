@@ -11,9 +11,8 @@ Contract (T010):
 """
 
 import logging
-from typing import Any, Sequence
+from typing import Any
 
-import numpy as np
 
 from core.retrieval.embeddings import BaseEmbedder
 from core.retrieval.faiss_index import VectorIndexManager

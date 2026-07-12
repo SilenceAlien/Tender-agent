@@ -12,8 +12,10 @@ def render_upload_panel():
     # Bid type selector
     bid_type = st.selectbox(
         "标书类型",
-        ["服务类", "货物类", "软件类", "工程类", "集成类", "运维类", "劳务管理服务类", "劳务外包类"],
-        index=7,
+        # N08 fix: removed "软件类" (no knowledge_base directory exists),
+        # N12 fix: changed default from index=7 to index=0 ("服务类")
+        ["服务类", "货物类", "工程类", "集成类", "运维类", "劳务管理服务类", "劳务外包类"],
+        index=0,
         key="bid_type",
     )
 

@@ -110,7 +110,7 @@ def create_llm(
     Args:
         provider: "openai", "deepseek", "zhipu", "qwen", "moonshot"
         api_key: API key
-        model: Model name (e.g. "gpt-4o", "deepseek-v4-pro")
+        model: Model name (e.g. "gpt-4o", "deepseek-chat")
         base_url: Optional custom API base URL
         **kwargs: temperature, max_tokens, etc.
 
@@ -157,11 +157,11 @@ def test_connection(
         with a descriptive message for the user.
 
     Examples:
-        >>> test_connection("deepseek", "sk-valid-key", "deepseek-v4-flash")
-        (True, "✅ DeepSeek 连接成功（deepseek-v4-flash，响应正常）")
+>>> test_connection("deepseek", "sk-valid-key", "deepseek-chat")
+(True, "✅ DeepSeek 连接成功（deepseek-chat，响应正常）")
 
-        >>> test_connection("deepseek", "bad-key", "deepseek-v4-flash")
-        (False, "❌ API Key 无效（401），请检查 Key 是否正确")
+>>> test_connection("deepseek", "bad-key", "deepseek-chat")
+(False, "❌ API Key 无效（401），请检查 Key 是否正确")
     """
     start_time = time.time()
 
@@ -202,7 +202,7 @@ def test_connection(
         elif "timeout" in error_str.lower() or "timed out" in error_str.lower():
             return False, f"⏱ 连接超时（{elapsed:.0f}s），请检查网络或稍后重试"
         elif "Connection" in error_str or "connect" in error_str.lower() or "Network" in error_str:
-            return False, f"🌐 网络连接失败，请检查网络环境"
+            return False, "🌐 网络连接失败，请检查网络环境"
         else:
             # Unknown error — include the raw message for debugging
             logger.warning("Connection test failed for %s: %s", provider, error_str)

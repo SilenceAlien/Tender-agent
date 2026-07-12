@@ -22,9 +22,9 @@
       "applicable_bid_types": [],
       "severity": "high",
       "directive_text": "同一章节中不得同时出现两种互斥方式的格式要素。",
-      "occurrence_count": 16,
+      "occurrence_count": 17,
       "first_seen": "2026-07-07T16:02:28.236354+00:00",
-      "last_seen": "2026-07-07T16:02:56.578167+00:00"
+      "last_seen": "2026-07-11T07:24:51.562688+00:00"
     },
     {
       "id": "lesson_3a4bede959e7",
@@ -47,9 +47,9 @@
       ],
       "severity": "medium",
       "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
-      "occurrence_count": 17,
+      "occurrence_count": 113,
       "first_seen": "2026-07-07T16:26:48.901829+00:00",
-      "last_seen": "2026-07-08T01:16:06.541967+00:00"
+      "last_seen": "2026-07-11T10:26:24.030889+00:00"
     }
   ]
 }

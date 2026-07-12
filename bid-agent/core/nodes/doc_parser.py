@@ -13,7 +13,6 @@ Contract (from node_interfaces.md):
 """
 
 import logging
-import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -89,8 +88,8 @@ def _load_docx(file_path: str) -> str:
 
     if not _is_zipfile(file_path):
         raise ValueError(
-            f"文件不是有效的 DOCX 格式（非 ZIP/OOXML 压缩包）。"
-            f"如果是旧版 .doc 文件，请用 Word 另存为 .docx 格式后再上传。"
+            "文件不是有效的 DOCX 格式（非 ZIP/OOXML 压缩包）。"
+            "如果是旧版 .doc 文件，请用 Word 另存为 .docx 格式后再上传。"
         )
 
     from docx import Document

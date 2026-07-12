@@ -292,7 +292,6 @@ def _mermaid_to_text_diagram(mermaid_code: str) -> list[str]:
     # Render from each root
     for i, root in enumerate(roots):
         root_is_last = (i == len(roots) - 1)
-        root_indent = ""
         label = node_labels.get(root, root)
         prefix = "┌── " if len(roots) == 1 else ("└── " if root_is_last else "├── ")
         lines.append(f"{prefix}{label}")
@@ -957,7 +956,6 @@ def _add_table_to_docx(
     Handles placeholder text (【待填写：...】) within cells by rendering
     them in red bold, consistent with body text formatting.
     """
-    import re as _re
 
     # Normalise column count
     col_count = max(len(header), max((len(r) for r in rows), default=0))
@@ -1100,10 +1098,9 @@ def _build_docx(
     import tempfile
 
     from docx import Document
-    from docx.enum.section import WD_ORIENT
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
     from docx.oxml.ns import qn
-    from docx.shared import Cm, Pt, Emu, RGBColor
+    from docx.shared import Cm, Pt, RGBColor
 
     doc = Document()
 
@@ -1196,7 +1193,6 @@ def _build_docx(
 
     # ── Section content ─────────────────────────────────────────────────
     title_levels = format_rules.get("title_levels", [])
-    title_fonts = ["黑体", "楷体", "仿宋"]  # Default fallback
 
     # Temp directory for rendered diagram images (cleaned up after save)
     import shutil
@@ -1204,8 +1200,7 @@ def _build_docx(
     _diagram_counter = 0
 
     for section_name, content in sections.items():
-        # Determine heading level
-        heading_level = 1  # Default: all chapters are level 1
+        # Determine heading font from format rules
         if title_levels and len(title_levels) > 0:
             heading_font = title_levels[0] if len(title_levels) > 0 else "黑体"
         else:

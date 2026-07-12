@@ -247,7 +247,7 @@ def main():
     # Load API config
     config = load_config()
     provider = config.get("provider", "deepseek")
-    model = config.get("model", "deepseek-v4-pro")
+    model = config.get("model", "deepseek-chat")  # N03 fix
     api_keys = config.get("api_keys", {})
     api_key = api_keys.get(provider, "")
 

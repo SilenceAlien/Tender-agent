@@ -4,7 +4,6 @@ Uses TypedDict (required by LangGraph StateGraph for proper state management).
 Each node returns a partial dict — LangGraph merges fields using reducers.
 """
 
-from datetime import datetime
 from enum import Enum
 from typing import Annotated, TypedDict
 
@@ -89,6 +88,12 @@ class AgentState(TypedDict):
     # Values: "服务类" | "货物类" | "工程类" | "运维类" | "集成类" | "劳务管理服务类" | ...
     bid_type: str
 
+    # ── Bid Subtype (95+优化 补强二) ────────────────────────────────────
+    # 劳务外包类下的子类型, 用于子类型分区检索和提示词路由.
+    # Values: "食堂餐饮" | "工业生产线" | "保安保洁" | "仓储物流" | "HRO" | "BPO" | ""
+    # Set by SubtypeRouter in ReqExtractor, confirmed by user in InfoVerificationGate.
+    bid_subtype: str
+
     # ── User Extra Requirements (补充说明) ─────────────────────────────
     # Free-text from the upload panel.  ContractExtractor will call LLM to
     # extract structured fields (bidder_name, project_location, etc.) and
@@ -168,6 +173,11 @@ class AgentState(TypedDict):
     # ── Node Status Tracking ───────────────────────────────────────────
     node_status: dict[str, str]  # node_name → NodeStatus value
 
+    # ── Export ────────────────────────────────────────────────────────
+    # Path to the generated DOCX file.  Set by DocumentAssembler.
+    # N01 fix: previously not in TypedDict → LangGraph silently dropped it.
+    export_path: str
+
     # ── Messages ───────────────────────────────────────────────────────
     # Annotated with add_messages reducer — appends, not overwrites
     messages: Annotated[list, add_messages]
@@ -186,6 +196,7 @@ def factory_state(**overrides) -> AgentState:
         "documents": [],
         "extracted_tables": [],  # P1-1
         "bid_type": "",  # Phase B3: empty = auto-detect / use generic prompts
+        "bid_subtype": "",  # 95+优化 补强二: 劳务外包子类型
         "extra_reqs": "",  # 补充说明, 由上传页面传入
         "chunk_size": 1000,  # 文档分块大小, 由上传页面传入
         "project_contract": {},  # ProjectContextContract 序列化, 由 ContractExtractor 构建
@@ -225,6 +236,7 @@ def factory_state(**overrides) -> AgentState:
         "max_rounds": 3,
         "node_status": {name: NodeStatus.PENDING.value for name in ALL_NODES},
         "messages": [],
+        "export_path": "",  # N01 fix: ensure LangGraph preserves this field
     }
 
     for key, value in overrides.items():

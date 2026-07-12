@@ -5,7 +5,6 @@ Fallback: Pure numpy brute-force (zero deps).
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Sequence
 

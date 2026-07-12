@@ -52,7 +52,7 @@ class TestSettingsDefaults:
     def test_llm_defaults(self):
         s = Settings()
         assert s.llm.default_provider == "deepseek"
-        assert s.llm.default_model == "deepseek-v4-pro"
+        assert s.llm.default_model == "deepseek-chat"
 
     def test_retrieval_defaults(self):
         s = Settings()

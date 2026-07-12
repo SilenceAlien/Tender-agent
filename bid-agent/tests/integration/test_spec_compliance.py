@@ -355,7 +355,7 @@ class TestUS4MultiModelSupport:
         from core.llm.providers import test_connection, create_llm
 
         # 1. create_llm() still creates the object (lazy, no API call)
-        llm = create_llm("deepseek", api_key="invalid-key-12345", model="deepseek-v4-pro")
+        llm = create_llm("deepseek", api_key="invalid-key-12345", model="deepseek-chat")
         assert llm is not None
         assert hasattr(llm, "invoke")
 
@@ -368,7 +368,7 @@ class TestUS4MultiModelSupport:
 
         with patch("core.llm.providers.create_llm", return_value=mock_llm):
             ok, msg = test_connection(
-                "deepseek", api_key="bad-key", model="deepseek-v4-flash"
+                "deepseek", api_key="bad-key", model="deepseek-chat"
             )
             assert ok is False, f"Expected failure for invalid key, got: {msg}"
             assert "401" in msg or "无效" in msg or "API Key" in msg, (
@@ -388,7 +388,7 @@ class TestUS4MultiModelSupport:
 
         with patch("core.llm.providers.create_llm", return_value=mock_llm):
             ok, msg = test_connection(
-                "deepseek", api_key="sk-valid-test-key", model="deepseek-v4-flash"
+                "deepseek", api_key="sk-valid-test-key", model="deepseek-chat"
             )
             assert ok is True, f"Expected success for valid key, got: {msg}"
             assert "成功" in msg or "success" in msg.lower()

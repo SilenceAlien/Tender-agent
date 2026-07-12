@@ -1,9 +1,29 @@
-"""LangGraph state machine — the 7-node pipeline with conditional routing.
+"""LangGraph state machine — the 14-node pipeline with conditional routing.
 
-Pipeline flow:
-    DocumentParser → ReqExtractor → TemplateMatcher → SectionGenerator
-       → QualityChecker ──[PASS]──→ DocumentAssembler
-                     └──[FAIL]──→ FeedbackProcessor → SectionGenerator (retry loop)
+N13 fix: updated from "7-node" to reflect the current 14-node architecture
+(including InfoVerificationGate, CrossReferenceChecker, ComplianceChecker,
+ScoreSimulator, HumanReviewGate).
+
+Pipeline flow (headless mode — build_graph):
+    DocumentParser → ReqExtractor → ContractExtractor → InfoVerificationGate
+    → EligibilityChecker → TemplateMatcher → SectionGenerator → QualityChecker
+    → CrossReferenceChecker → ComplianceChecker → ScoreSimulator
+    → HumanReviewGate → DocumentAssembler → END
+
+Pipeline flow (interactive mode — build_generation_graph):
+    Same as above, but HumanReviewGate runs WITHOUT auto_approve.  The pipeline
+    pauses at HumanReviewGate (review_status="pending" → __end__).  The GUI's
+    review_panel displays sections for user review.
+
+    R02 fix: review_panel now calls resume_after_review() to inject the
+    human verdict:
+    - approved  → review_panel directly calls doc_assembler() to generate DOCX
+    - rejected  → review_panel re-invokes build_generation_graph with
+                  review_status="rejected", which routes to FeedbackProcessor
+                  → SectionGenerator (revision loop) → ... → HumanReviewGate
+                  (pending again for the next review round)
+
+    The export_panel remains as a fallback for manual DOCX export.
 
 LLM Injection (Phase A1 fix):
     LangGraph's add_node only accepts ``(state) -> dict`` signatures and cannot
@@ -30,7 +50,7 @@ logger = logging.getLogger(__name__)
 from core.nodes.doc_parser import document_parser
 from core.nodes.req_extractor import req_extractor
 from core.nodes.contract_extractor import contract_extractor
-from core.nodes.info_verification_gate import info_verification_gate, apply_user_corrections
+from core.nodes.info_verification_gate import info_verification_gate, apply_user_corrections  # noqa: F401
 from core.nodes.eligibility_checker import eligibility_checker
 from core.nodes.template_matcher import template_matcher, build_default_search_fn
 from core.nodes.section_generator import generate_all_sections_parallel as section_generator
@@ -398,9 +418,17 @@ def build_generation_graph(
 ) -> StateGraph:
     """Construct Phase 2: generation sub-graph (interactive mode).
 
+    N02/R02 design note: In interactive mode, HumanReviewGate is registered
+    WITHOUT auto_approve.  The pipeline pauses at HumanReviewGate
+    (review_status="pending" → __end__).  The GUI's review_panel calls
+    resume_after_review() with the human verdict:
+    - approved → directly calls doc_assembler() for DOCX generation
+    - rejected → re-invokes this graph, triggering FeedbackProcessor →
+      SectionGenerator revision loop, then back to HumanReviewGate.
+
     EligibilityChecker → TemplateMatcher → SectionGenerator → QualityChecker
     → CrossReferenceChecker → ComplianceChecker → ScoreSimulator
-    → HumanReviewGate → DocumentAssembler → END
+    → HumanReviewGate → [pending → END; approved → DocumentAssembler; rejected → FeedbackProcessor]
 
     Entry point is EligibilityChecker.  The state passed in should already
     have ``info_verification_status="confirmed"`` and ``user_confirmed_fields``

@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 # Similarity threshold: below this, consider no match
 MIN_SIMILARITY = 0.3
 
-# Default template types (used when FAISS index not available)
-TEMPLATE_TYPES = ["服务", "货物", "软件", "工程", "集成", "运维", "劳务外包"]
+# N08 fix: aligned with knowledge_base directory names (all include "类")
+# and upload_panel options.  Previously lacked "类" suffix and missing "劳务管理服务类".
+TEMPLATE_TYPES = ["服务类", "货物类", "工程类", "集成类", "运维类", "劳务外包类", "劳务管理服务类"]
 
 
 def _build_query_text(requirements: dict) -> str:

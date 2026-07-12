@@ -60,6 +60,38 @@ _SCORE_SIM_PROMPT = """你是一位资深的招投标评审专家。请模拟评
 # ── Heuristic scorer (no LLM) ──────────────────────────────────────────
 
 
+def _tokenize_cn(text: str) -> list[str]:
+    """N09 fix: Tokenize text for keyword overlap, with Chinese support.
+
+    For Chinese text (no spaces), generates 2-character n-grams.
+    For mixed text, also splits on spaces/punctuation for ASCII tokens.
+    """
+    import re
+
+    tokens: list[str] = []
+
+    # Split by spaces and punctuation for ASCII tokens
+    parts = re.split(r"[\s,，;；:：、/\\()（）\[\]【】]+", text)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if len(part) >= 2:
+            # Check if it's mostly CJK
+            cjk_count = sum(1 for c in part if '\u4e00' <= c <= '\u9fff')
+            if cjk_count >= len(part) * 0.5:
+                # Chinese text: generate 2-char n-grams
+                for i in range(len(part) - 1):
+                    tokens.append(part[i:i + 2])
+            else:
+                tokens.append(part)
+        elif len(part) == 1 and '\u4e00' <= part <= '\u9fff':
+            # Single CJK character — skip (too short for meaningful matching)
+            pass
+
+    return tokens
+
+
 def _heuristic_score(state: AgentState) -> dict:
     """Estimate scores without an LLM using content-coverage heuristics.
 
@@ -105,7 +137,10 @@ def _heuristic_score(state: AgentState) -> dict:
                 ratio = 0.60
         else:
             # Keyword overlap fallback
-            tokens = [t for t in name_lower.replace("，", " ").split() if len(t) >= 2]
+            # N09 fix: use character n-gram tokenization for Chinese text.
+            # Previously, split() only worked for space-delimited text (English),
+            # leaving Chinese names as single tokens that rarely matched.
+            tokens = _tokenize_cn(name_lower)
             if tokens:
                 hits = sum(1 for t in tokens if t in corpus)
                 ratio = hits / len(tokens) * 0.5  # partial credit only

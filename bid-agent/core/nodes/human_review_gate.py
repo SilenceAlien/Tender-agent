@@ -52,19 +52,23 @@ def human_review_gate(
         {review_status, review_comments, node_status}
 
     In interactive mode (auto_approve=False), the node sets
-    ``review_status="pending"`` and returns.  The GUI is expected to
-    display the review panel and call ``resume_after_review()`` to
-    inject the human verdict into state, after which the graph's
-    conditional edge routes accordingly.
+    ``review_status="pending"`` and returns.  The GUI's review_panel
+    calls ``resume_after_review()`` to inject the human verdict into
+    state, after which the graph's conditional edge routes accordingly
+    (R02 fix: previously the GUI never called resume_after_review(),
+    making the approved/rejected routes dead code).
     """
     sections = state.get("sections", {})
     score_sim = state.get("score_simulation", {})
     quality = state.get("quality_report", {})
 
     if not sections:
-        logger.warning("HumanReviewGate: no sections to review — auto-rejecting")
+        # N10 fix: return pending instead of rejected.  Auto-reject would
+        # route to FeedbackProcessor and trigger a revision loop with no
+        # content to revise.  Pending pauses the pipeline gracefully.
+        logger.warning("HumanReviewGate: no sections to review — returning pending")
         return {
-            "review_status": "rejected",
+            "review_status": "pending",
             "review_comments": ["无章节内容可审核"],
             "node_status": {
                 **state.get("node_status", {}),

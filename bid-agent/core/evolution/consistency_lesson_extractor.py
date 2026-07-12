@@ -166,7 +166,6 @@ class ConsistencyLessonExtractor:
     @staticmethod
     def _classify_quality_issue(detail: str) -> str:
         """根据问题文本推断 issue_type，而非硬编码为 mutual_exclusion。"""
-        detail_lower = detail.lower()
         # 金额相关
         if any(kw in detail for kw in ["金额", "报价", "元", "万元", "¥"]):
             return "amount_mismatch"

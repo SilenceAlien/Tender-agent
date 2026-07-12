@@ -46,6 +46,8 @@ _VERIFICATION_FIELDS = [
     ("duration", "工期/服务期", False),
     ("warranty", "质保期", False),
     ("service_target", "服务对象", False),
+    # 95+优化 补强二: 子类型确认
+    ("bid_subtype", "劳务外包子类型", False),
 ]
 
 
@@ -166,6 +168,22 @@ def _build_info_summary(state: AgentState) -> dict:
 
     # Add bid_type
     summary_fields["bid_type"] = state.get("bid_type", "")
+    # 95+优化 补强二: 子类型 + 冷启动状态
+    summary_fields["bid_subtype"] = (
+        user_fields.get("bid_subtype", "")
+        or state.get("bid_subtype", "")
+    )
+    bid_subtype_val = summary_fields["bid_subtype"]
+    if bid_subtype_val and state.get("bid_type", ""):
+        try:
+            from core.retrieval.subtype_router import get_cold_start_info
+            cold_start = get_cold_start_info(bid_subtype_val)
+            summary_fields["subtype_status"] = cold_start["subtype_status"]
+            summary_fields["subtype_hint"] = cold_start["subtype_hint"]
+            summary_fields["subtype_chunk_count"] = cold_start["chunk_count"]
+            summary_fields["nearest_subtypes"] = cold_start["nearest_subtypes"]
+        except Exception:
+            pass
 
     # Annotate sources
     field_sources = _annotate_field_sources(requirements, contract, user_fields)
@@ -282,7 +300,6 @@ def apply_user_corrections(
         - user_confirmed_fields=corrected_fields
         - project_contract: re-merged with user corrections (highest priority)
     """
-    from core.contract import ProjectContextContract
     from core.nodes.contract_extractor import _merge_contract_sources
 
     logger.info(

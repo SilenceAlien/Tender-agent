@@ -341,6 +341,7 @@ def req_extractor(
     """
     documents = state.get("documents", [])
     extracted_tables = state.get("extracted_tables", []) or []
+    bid_type = state.get("bid_type", "")
 
     # ── P1-1: consume structured tables first (no LLM cost) ────────────
     table_scoring, table_quals = _requirements_from_tables(extracted_tables)
@@ -468,7 +469,36 @@ def req_extractor(
             f"tenderer_name='{requirements.get('tenderer_name', '')}'"
         )
 
-    return {
+    # ── 95+优化 补强二: 子类型识别 (仅劳务外包类) ─────────────────────
+    bid_subtype = ""
+    subtype_info = {}
+    if bid_type and ("劳务外包" in bid_type or "劳务管理服务" in bid_type):
+        try:
+            from core.retrieval.subtype_router import detect_subtype
+            # 使用前3000字进行子类型识别
+            detect_text = combined[:3000] if combined else ""
+            # 获取 LLM 函数 (复用管道的 llm_fn)
+            subtype_llm = None
+            if llm_fn is None:
+                from core.graph import get_pipeline_llm
+                subtype_llm = get_pipeline_llm()
+            else:
+                subtype_llm = llm_fn
+            subtype_info = detect_subtype(detect_text, subtype_llm)
+            bid_subtype = subtype_info.get("bid_subtype", "")
+            if bid_subtype:
+                logger.info(
+                    f"ReqExtractor: detected bid_subtype='{bid_subtype}' "
+                    f"(method={subtype_info.get('method', '?')}, "
+                    f"confidence={subtype_info.get('confidence', 0):.2f})"
+                )
+        except Exception as e:
+            logger.warning(f"SubtypeRouter detection failed: {e}")
+
+    result = {
         "requirements": requirements,
         "node_status": {**state.get("node_status", {}), "ReqExtractor": NodeStatus.COMPLETED.value},
     }
+    if bid_subtype:
+        result["bid_subtype"] = bid_subtype
+    return result

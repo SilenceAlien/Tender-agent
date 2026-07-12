@@ -24,7 +24,7 @@ class TestProviderFactory:
         assert hasattr(llm, "invoke")
 
     def test_create_deepseek(self):
-        llm = create_llm("deepseek", api_key="sk-test", model="deepseek-v4-pro")
+        llm = create_llm("deepseek", api_key="sk-test", model="deepseek-chat")
         assert llm is not None
         # Default base_url should be DeepSeek
         assert "deepseek.com" in str(llm.openai_api_base)

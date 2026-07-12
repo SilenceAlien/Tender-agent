@@ -15,7 +15,7 @@ Supports:
 """
 
 import logging
-from typing import Any, Callable
+from typing import Callable
 
 from core.state import AgentState, NodeStatus
 
@@ -344,8 +344,69 @@ def _get_consistency_lesson_directive(section_key: str, bid_type: str = "") -> s
         return ""
 
 
+def _inject_table_template(section_key: str, bid_type: str, bid_subtype: str) -> str:
+    """95+优化 补强五: 加载子类型专用的表格模板, 注入到资格审查章提示词中.
+
+    当 section_key 为 sec6_qualification / ch6_qualifications 且 bid_subtype 存在时,
+    从 knowledge_base/劳务外包类/{bid_subtype}/patterns/ 加载结构化 JSON 模板,
+    转为 Markdown 表格格式注入提示词.
+
+    数据格式与 ingest_real_bid.extract_and_save_tables 写入格式一致:
+        header: list[str], rows: list[list[str]], type: str
+    """
+    if section_key not in ("sec6_qualification", "ch6_qualifications"):
+        return ""
+    if not bid_type or not bid_subtype:
+        return ""
+
+    try:
+        import json
+        from pathlib import Path
+        kb_root = Path(__file__).parent.parent.parent.parent / "knowledge_base"
+        # 归一化 bid_type → KB 目录名: 劳务管理服务类/劳务外包类 都映射到 劳务外包类
+        kb_type = "劳务外包类" if ("劳务" in bid_type) else bid_type
+        table_dir = kb_root / kb_type / bid_subtype / "patterns"
+        if not table_dir.exists():
+            return ""
+
+        templates = []
+        for json_file in table_dir.glob("*.json"):
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+            # 数据格式: header (list[str]), rows (list[list[str]])
+            header = data.get("header", [])
+            rows = data.get("rows", [])
+            if not header or not rows:
+                continue
+            # 仅加载资格审查类型表格
+            if data.get("type", "") not in ("qualification", "unknown"):
+                continue
+
+            # 构建 Markdown 表格
+            header_cells = [str(c) for c in header]
+            md_lines = [
+                f"**{data.get('type', '资格审查表')}表 (来源: {data.get('source', '')})**",
+                "",
+                "| " + " | ".join(header_cells) + " |",
+                "|" + "|".join(["---"] * len(header_cells)) + "|",
+            ]
+            for row in rows:
+                cells = [str(row[i]) if i < len(row) else "" for i in range(len(header_cells))]
+                md_lines.append("| " + " | ".join(cells) + " |")
+
+            templates.append("\n".join(md_lines))
+
+        if templates:
+            return (
+                "\n\n【资格审查表结构化模板 — 请按此结构填写】\n"
+                + "\n\n".join(templates)
+            )
+    except Exception as e:
+        logger.debug(f"Table template injection skipped: {e}")
+    return ""
+
+
 def _get_section_prompt(section_key: str, requirements_context: str, bid_type: str = "",
-                        contract_summary: str = "") -> str:
+                        contract_summary: str = "", bid_subtype: str = "") -> str:
     """Get the prompt template for a section, with requirements injected.
 
     Phase B2: when ``bid_type`` is 劳务管理服务类, look up the optimized prompt
@@ -365,9 +426,13 @@ def _get_section_prompt(section_key: str, requirements_context: str, bid_type: s
             if section_key.startswith("sec"):
                 base_prompt = get_optimized_section_prompt(section_key, requirements_context)
                 # P1-2: RAG injection
-                ref_snippet = _retrieve_reference(section_key, bid_type)
+                ref_snippet = _retrieve_reference(section_key, bid_type, bid_subtype=bid_subtype)
                 if ref_snippet:
                     base_prompt += f"\n\n{ref_snippet}"
+                # 95+优化 补强五: 表格模板注入
+                table_tmpl = _inject_table_template(section_key, bid_type, bid_subtype)
+                if table_tmpl:
+                    base_prompt += table_tmpl
                 # Inject anti-fabrication directive
                 base_prompt += NO_FABRICATION_DIRECTIVE
                 # Phase 007: inject consistency lessons
@@ -397,9 +462,14 @@ def _get_section_prompt(section_key: str, requirements_context: str, bid_type: s
         prompt += _DIAGRAM_INSTRUCTION
 
     # P1-2: RAG injection for generic prompts too
-    ref_snippet = _retrieve_reference(section_key, bid_type)
+    ref_snippet = _retrieve_reference(section_key, bid_type, bid_subtype=bid_subtype)
     if ref_snippet:
         prompt += f"\n\n{ref_snippet}"
+
+    # 95+优化 补强五: 表格模板注入 (generic prompts)
+    table_tmpl = _inject_table_template(section_key, bid_type, bid_subtype)
+    if table_tmpl:
+        prompt += table_tmpl
 
     # Phase 007: inject consistency lessons for generic prompts too
     lesson_directive = _get_consistency_lesson_directive(section_key, bid_type)
@@ -413,9 +483,10 @@ def _get_section_prompt(section_key: str, requirements_context: str, bid_type: s
     return prompt
 
 
-def _retrieve_reference(section_key: str, bid_type: str) -> str:
+def _retrieve_reference(section_key: str, bid_type: str, bid_subtype: str = "") -> str:
     """Retrieve a reference essay snippet for RAG injection.
 
+    95+优化 补强二: 当 bid_subtype 存在时, 优先搜索子类型分区的 chunks 目录.
     Returns an empty string if no references are found (non-fatal).
     """
     try:
@@ -423,7 +494,7 @@ def _retrieve_reference(section_key: str, bid_type: str) -> str:
         retriever = get_reference_retriever()
         # Build a query hint from the section key (convert sec7_service_plan → "服务方案")
         query_hint = section_key.replace("_", " ").replace("sec", "").replace("ch", "").strip()
-        snippet = retriever.retrieve_for_section(section_key, bid_type, query_hint)
+        snippet = retriever.retrieve_for_section(section_key, bid_type, query_hint, bid_subtype=bid_subtype)
         if snippet:
             logger.debug(f"RAG: injected {len(snippet)} chars of reference for '{section_key}'")
         return snippet
@@ -440,16 +511,33 @@ def _collect_section_feedback(state: AgentState) -> dict[str, list[str]]:
     Now we extract per-section revision instructions so the generator can
     perform *targeted* regeneration instead of skipping already-built sections.
 
+    R02 fix: entries with ``target_section=""`` (e.g. from human review
+    rejection via ``resume_after_review``) are treated as **global feedback**
+    and applied to ALL existing sections.
+
     Returns:
         {section_name: [feedback_text, ...]} — only sections with feedback.
     """
     feedback_history = state.get("feedback_history", []) or []
     by_section: dict[str, list[str]] = {}
+    global_feedbacks: list[str] = []
     for record in feedback_history:
         target = record.get("target_section", "")
         text = record.get("feedback_text", "")
-        if target and text:
+        if not text:
+            continue
+        if target:
             by_section.setdefault(target, []).append(text)
+        else:
+            # Global feedback (e.g. human review rejection) — applies to all
+            global_feedbacks.append(text)
+
+    # Apply global feedbacks to all existing sections
+    if global_feedbacks:
+        existing_sections = state.get("sections", {})
+        for section_name in existing_sections:
+            by_section.setdefault(section_name, []).extend(global_feedbacks)
+
     return by_section
 
 
@@ -566,6 +654,7 @@ def section_generator(
     target_sections = sections_to_generate or _resolve_sections_from_template(state)
     existing_sections = state.get("sections", {})
     bid_type = state.get("bid_type", "")
+    bid_subtype = state.get("bid_subtype", "")  # 95+优化 补强二
 
     new_sections: dict[str, str] = {}
 
@@ -581,7 +670,7 @@ def section_generator(
             continue
 
         prompt = _get_section_prompt(section_key, requirements_context, bid_type=bid_type,
-                                     contract_summary=contract_summary)
+                                     contract_summary=contract_summary, bid_subtype=bid_subtype)
 
         if llm_fn is None:
             # Check global LLM config (set by GUI)
@@ -650,6 +739,7 @@ def generate_all_sections_parallel(
     # Phase A3/B3: resolve section set from selected template or bid_type
     target_sections = _resolve_sections_from_template(state)
     bid_type = state.get("bid_type", "")
+    bid_subtype = state.get("bid_subtype", "")  # 95+优化 补强二
 
     lock = threading.Lock()
     results: dict[str, str] = {}
@@ -666,7 +756,7 @@ def generate_all_sections_parallel(
             return name, existing[name]
 
         prompt = _get_section_prompt(key, requirements_context, bid_type=bid_type,
-                                     contract_summary=contract_summary)
+                                     contract_summary=contract_summary, bid_subtype=bid_subtype)
         # Inject revision context so the LLM addresses the specific issues
         prompt = prompt + _build_revision_context(feedback_texts)
 

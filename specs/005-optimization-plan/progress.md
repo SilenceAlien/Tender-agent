@@ -146,3 +146,48 @@
 - [ ] HumanReviewGate 人工审核卡点
 - [ ] PricingStrategist 报价策略节点
 - [ ] evolution 模块接入 SectionGenerator
+
+---
+
+## 2026-07-11 会话 5 — 95+优化方案执行完成 + Lint 修复
+
+### 完成
+- [x] 95+优化方案全部 6 项补强执行完成
+  - 补强一：三层子类型识别（关键词→LLM→用户确认）→ `subtype_router.py`
+  - 补强二：`bid_subtype` 贯穿全管道（state→req_extractor→info_verification_gate→section_generator→reference_retriever）
+  - 补强三：`_shared` 严格准入 + 权重控制（格式固定型章节才入 `_shared/`）
+  - 补强四：新子类型完整冷启动链路（chunk_count=0 → _shared 0.7 + 最近邻 0.3）
+  - 补强五：表格结构化提取与入库（`extract_and_save_tables` → JSON patterns/）
+  - 补强六：子类型分区版本管理（`manifest.json` + 哈希校验）
+- [x] 两份真实标书 PDF 入库（广铁 + 广晟），按子类型分区存储
+- [x] 子类型目录初始化（HRO / 食堂餐饮 / 工业生产线），含 `_index.json` + `manifest.json`
+- [x] 全量测试通过：**507 passed, 0 failed**
+- [x] Lint 修复：32 个 F 级别错误 → 0 个（25 自动修复 + 7 手动修复）
+  - F821: 实现 `extract_and_save_tables` 和 `update_subtype_manifest` 两个缺失函数
+  - F841: 移除 4 个未使用变量（`detail_lower`, `root_indent`, `title_fonts`, `heading_level`, `has_new`）
+  - F401: 自动移除未使用导入（+ 恢复 `apply_user_corrections` 重导出并加 `# noqa: F401`）
+  - F541: 自动移除无占位符的 f-string 前缀
+  - F811: 自动移除 `difflib` 重复导入
+
+### 关键决策
+- `save_chunks` 新增 `bid_subtype` 参数：非空时存入子类型 `chunks/` 目录，同时将格式固定型章节同步到 `_shared/chapters/`
+- `extract_and_save_tables` 使用 PyMuPDF 的 `find_tables()` API，自动推断表格类型（scoring/qualification/pricing/staffing）
+- `update_subtype_manifest` 复用 `SubtypeRouter.update_manifest()` 进行版本管理，避免重复实现
+- `apply_user_corrections` 在 `graph.py` 中标记 `# noqa: F401` 作为重导出，供测试导入
+
+### 修改文件
+- `scripts/ingest_real_bid.py` — 新增 `extract_and_save_tables`、`update_subtype_manifest`，修复 `save_chunks` 签名，移除未使用变量
+- `core/graph.py` — 恢复 `apply_user_corrections` 重导出（`# noqa: F401`）
+- `core/evolution/consistency_lesson_extractor.py` — 移除未使用变量 `detail_lower`
+- `core/nodes/doc_assembler.py` — 移除未使用变量 `root_indent`、`title_fonts`、`heading_level`
+- 多个文件 — 自动修复 F401/F541/F811（ruff --fix）
+
+### 错误
+| 错误 | Strike | 方案 |
+|------|--------|------|
+| `test_two_phase_pipeline.py` 导入 `apply_user_corrections` 失败 | 1 | 恢复 `graph.py` 中导入并加 `# noqa: F401` |
+
+### 下次
+- [ ] 端到端验证：使用真实招标文件测试完整管道流程
+- [ ] FAISS 语义检索启用（当前为关键词检索）
+- [ ] GUI 界面适配 `bid_subtype` 选择

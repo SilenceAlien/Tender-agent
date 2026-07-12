@@ -51,13 +51,27 @@ htmlcov/
 Icon
 
 # ===========================================
-# 环境变量 & 密钥
+# 环境变量 & 密钥 & API Key
 # ===========================================
 .env
 *.env
 .env.local
 secrets.json
 config/local_settings.py
+
+# 本地配置覆盖（可能包含 API key 等敏感信息）
+bid-agent/config/config.local.yaml
+**/config.local.yaml
+**/config.local.yml
+
+# Streamlit 密钥文件
+.streamlit/secrets.toml
+
+# 通用密钥/凭证文件
+*secret*
+*credentials*
+*api_key*
+*apikey*
 
 # ===========================================
 # 生成文件 — 标书导出（138MB+，运行时生成）

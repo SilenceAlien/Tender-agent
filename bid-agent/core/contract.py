@@ -221,7 +221,7 @@ class ContractValidator:
         if not ok:
             import logging
             logging.getLogger(__name__).warning(
-                f"契约不完整, 校验将跳过必填字段检查"
+                "契约不完整, 校验将跳过必填字段检查"
             )
 
     def _check_project_name(self, chapter: str, text: str) -> List[ContractIssue]:

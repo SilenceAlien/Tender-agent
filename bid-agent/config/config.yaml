@@ -7,7 +7,7 @@ deployment:
 
 llm:
   default_provider: deepseek
-  default_model: deepseek-v4-pro
+  default_model: deepseek-chat  # N03 fix: real DeepSeek model name
   task_routing:  # 任务级覆盖（可选）
     quality_checker:
       provider: anthropic

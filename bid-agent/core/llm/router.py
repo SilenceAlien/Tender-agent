@@ -13,16 +13,17 @@ logger = logging.getLogger(__name__)
 
 # Default model assignments per node
 # These are fallbacks — the GUI config (~/.bid-agent/config.json) overrides them.
+# N03 fix: use real DeepSeek API model names
 DEFAULT_NODE_MODELS = {
-    "ReqExtractor": {"provider": "deepseek", "model": "deepseek-v4-flash"},
-    "SectionGenerator": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+    "ReqExtractor": {"provider": "deepseek", "model": "deepseek-chat"},
+    "SectionGenerator": {"provider": "deepseek", "model": "deepseek-chat"},
     "QualityChecker": {"provider": "openai", "model": "gpt-4o-mini"},
-    "FeedbackProcessor": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+    "FeedbackProcessor": {"provider": "deepseek", "model": "deepseek-chat"},
 }
 
 # Global default (used for any node not in the map)
 DEFAULT_PROVIDER = "deepseek"
-DEFAULT_MODEL = "deepseek-v4-pro"
+DEFAULT_MODEL = "deepseek-chat"
 
 
 class ModelRouter:
