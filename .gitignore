@@ -111,6 +111,7 @@ bid-agent/data/faiss_index/*
 /specs/
 /memory/
 /bid-agent/specs/
+/.workbuddy/
 
 # ===========================================
 # 日志文件
