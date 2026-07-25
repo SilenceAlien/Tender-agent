@@ -1,4 +1,4 @@
-# 超大招标文件（>200MB）完整读取策略（v5 修订版）
+# 超大招标文件（>200MB）完整读取策略（v7.1 修订版）
 
 > **状态**：方案设计（未执行）
 > **日期**：2026-07-12
@@ -8,6 +8,60 @@
 > - v3：修复 5 个 Critical 问题（C1 倒排索引分词器不匹配、C2 generator 与 list 矛盾、C3 LRU cache hit bug、C4 上传阶段 OOM、C5 API 签名错误）；补全 10 个 Major 空白（M1 OCR 完整实现、M2 章节自动切分、M3 并行 OCR + 性能重估、M4 Reader 生命周期、M5 进度反馈、M6 断点续传、M7 raw_text 清理、M8 bid_subtype 适配、M9 召回率量化 + 二次检索、M10 测试策略）
 > - v4：修复 3 个新 Critical 问题（NC1 预算分配截断 bug、NC2 fitz 线程安全 segfault、NC3 并行 OCR 未集成到流式解析）；补全 6 个 Major 空白（_sample_text_ratio 均匀采样、SearchResult dataclass 定义、5 个辅助函数实现、多用户并发控制、磁盘 I/O 优化 pages.blob、倒排索引内存占用分析）
 > - v5：修复 3 个 Critical 问题（NC4 预渲染内存爆炸→分批处理、NC5 索引 token 残留→remove_page、NC6 ParsedDocumentReader 初始化矛盾→统一懒加载）；修复 6 个 Major 问题（M1 total_chars 估算不准→流式累加、M2 document_id 生成不统一→md5 hash、M3 suffix 作用域 bug、M4 _calc_ocr_workers 未集成、M5 PageBlobReader 未集成到 get_page、M6 架构图未反映两阶段 OCR）
+> - v6：修复 13 个 Critical 问题（基于 7-agent 并行评估报告）
+>   - C-01：document_id 生成 bug → file_path 为临时路径导致断点续传失效，改用 md5(filename + file_size + 前1MB内容hash)
+>   - C-02：sections 字段类型冲突 → 与 AgentState 顶层 sections:dict[str,str] 冲突，重命名为 chapter_index
+>   - C-03：_calc_ocr_workers 竞态缺陷 → check-then-act 模式限流失效，改为 acquire 后持有 + finally release
+>   - C-04：AgentState TypedDict 未更新 → parse_mode/parsed_dir/meta 字段未声明，补全 TypedDict + factory_state 默认值
+>   - C-05：bigram 英数处理 bug → 索引整词 vs 查询 bigram 不一致，统一 _tokenize_query 切片逻辑
+>   - C-06：_serialize_state deepcopy 未改 → 快照导出仍 OOM，检测 streaming 模式跳过全文深拷贝
+>   - C-07：PageBlobReader 写入未集成 → _stream_parse_pdf 仍用 page_file.write_text，统一使用 PageBlobReader
+>   - C-08：PaddleOCR 线程安全 → 单例+4线程并发不安全，改为实例池
+>   - C-09：_ocr_with_timeout 不可靠 → daemon 线程无法 kill，改用 multiprocessing.Process
+>   - C-10：_detect_chapter_boundary / _save_chapter 未定义 → 补全实现 + 降级策略
+>   - C-11：_build_meta 调用链断裂 → 缺传 probe_info 等参数，补全调用链
+>   - C-12：进度文件非原子写 → 崩溃损坏 JSON，改用 tmp + os.replace 原子替换
+>   - C-13：remove_page O(N) 性能 → 遍历全部 token，增加反向索引 dict[int, set[str]]
+>   - P2 优化：LRU 容量 50→200 页；per_page_limit 按类别差异化；二次检索按章节索引扫描；QualityChecker 公司名改用倒排索引；磁盘预检 2GB→3GB；验收标准召回率统一为 90%；PaddleOCR 版本锁定 + 离线模型预置；实施路径增加 Phase 0 + Phase 11
+> - **v7.2：修复 v7.1 二次审查报告中的 2 个 Critical + 5 个 Major + 3 个 Minor 问题**
+>   - C-V7.1-01：信号量双重获取 — 调用方和函数内部各调一次 `_calc_ocr_workers`，每次 OCR 泄漏 N 个槽位，2 次后信号量耗尽 → 删除调用方的 `_calc_ocr_workers`，仅在 `_ocr_batch_parallel_safe` 内部调用
+>   - C-V7.1-02：`_ocr_worker_init` 声称配置了 `basicConfig` 但代码中不存在，spawn 方式下子进程日志丢失 → 在函数开头添加 `logging.basicConfig()`
+>   - M-V7.1-01：`_calc_ocr_workers` 读取 `_value` 和 `acquire` 之间存在 TOCTOU 竞态 → 直接 acquire `requested` 个，不预读 `_value`
+>   - M-V7.1-02：日志使用 `max_workers` 而非 `actual_workers` → 修正
+>   - M-V7.1-03：5 处残留"线程"术语未更新为"进程" → 全部修正
+>   - M-V7.1-04：`test_ocr_batch_parallel_no_segfault` 未 mock `as_completed` → 添加 `as_completed` mock
+>   - M-V7.1-05：验收标准召回率不一致（§1.3 和 §14.1 写 95%，§9.1 写 90%）→ 统一为 90%
+>   - m-V7.1-01：`TimeoutError` 在 Python 3.8-3.10 与 `concurrent.futures.TimeoutError` 不匹配 → 改用 `FutureTimeoutError`
+>   - m-V7.1-02：内存估算仅考虑 4 worker，未覆盖 8 worker 场景 → 补充
+>   - m-V7.1-03：测试 `patch('__main__._ocr_batch_parallel_safe')` 模块路径错误 → 改为 `core.large_file._ocr_batch_parallel_safe`
+> - **v7.1：修复 v7 审查报告中的 3 个 Critical + 13 个 Major + 8 个 Minor 问题**
+>   - C-V7-01：`_stream_parse_pdf` 中 `KEEP_PAGE_FILES`/`blob_reader` 赋值缩进断裂（零缩进写在函数体内）→ 修正为函数内缩进（3 处）
+>   - C-V7-02：v7 迁移到 ProcessPoolExecutor 后 per-task 信号量 acquire/release 被删除，OCR 并发限流失效 → 在 `_ocr_batch_parallel_safe` 中恢复信号量获取/释放
+>   - C-V7-03：`pool.shutdown(wait=False)` 无法终止卡死的 worker 进程 → 增加 `terminate()` + `kill()` 强制回收
+>   - M-V7-01：`_stream_parse_pdf` 返回类型标注 4 元组（实际 5 元组）→ 更新
+>   - M-V7-02~03：架构图/标题仍写"线程池"/"多线程"→ 更新为"进程池"/"多进程"
+>   - M-V7-04：§3.2.3 重复的内存分析表 → 删除旧表
+>   - M-V7-05：`_ocr_worker_init` 用 logger，`_ocr_worker_task` 用 print → 统一为 logger + basicConfig
+>   - M-V7-06~10：实施路径/文件表/并发参数/验收表/风险评估中"线程"→"进程"
+>   - M-V7-11：`test_ocr_batch_parallel_no_segfault` mock `_get_ocr_engine`（不存在）→ 重构为 mock ProcessPoolExecutor
+>   - M-V7-12：`test_ocr_process_pool_model_loading_once` 跨进程 `nonlocal` 不工作 → 改用 `multiprocessing.Value`
+>   - M-V7-13：`_cleanup_old_parsed_dirs` 与 `_cleanup_expired_parsed_dirs` 重复 → 合并为一个
+>   - m-V7-01~08：死参数删除/变量名修正/LRU 缓存值/OCR 结果健壮性/Python 版本标注/测试构造参数/断言修正/浅拷贝冗余
+> - **v7：修复 2 个 Critical + 8 个 Major + 4 个 Minor 问题（基于 v6 评估报告）**
+>   - NC-01：C-09 子进程每页重新加载模型导致性能回归（750页从25分钟暴涨到4.5+小时）→ 改用 ProcessPoolExecutor + initializer 预加载，worker 进程在整个批次内复用 PaddleOCR 实例
+>   - NC-02：C-08 线程级实例池与 C-09 子进程架构矛盾 → 统一为进程池方案，放弃线程级实例池
+>   - NC-03：C-07 双写磁盘 I/O 开销 → 增加 keep_page_files 配置项，默认关闭逐页文件
+>   - NC-04：§13.2 进度回调使用 4 元组解包（应为 5 元组）→ 修正
+>   - NC-05：进度回调特殊值 -1,-1 未处理 → 回调中检查特殊值显示"排队中"
+>   - NC-06：_ocr_page 死代码 → 删除，OCR 逻辑统一在 _ocr_batch_parallel_safe
+>   - NC-07：反向索引 _page_to_tokens 内存未计入 §3.2.3 分析 → 补充
+>   - NC-08：_calc_ocr_workers 快照探测仍有竞态 → 改用 _ocr_semaphore._value 直接读取
+>   - 遗留-01：PaddleOCR 依赖冲突 → 提供 Dockerfile 模板
+>   - 遗留-02：_extract_company_names 重复定义 → 声明复用 quality_checker.py 版本
+>   - 遗留-03：_classify_table 重复定义 → 声明复用 doc_parser.py 版本
+>   - 遗留-04：bigram 停用词列表不完整 → 补充代词/量词/连词
+>   - 遗留-05：TTL 清理仅在启动时 → 增加上传前触发 + 定时清理
+>   - 遗留-06：缺少性能/回归测试 → 补充 test_memory_peak / test_small_file_unchanged / test_concurrent_users
 
 ---
 
@@ -57,7 +111,7 @@ result["parsed_content"] = raw_text           # 全文存入 AgentState
 1. 能够稳定处理 200MB-500MB 的 PDF 招标文件
 2. 解析过程中内存峰值控制在 4GB 以内（含上传阶段）
 3. 解析过程有进度反馈（百分比/页码），通过 Streamlit 前端实时展示
-4. 关键信息（评分标准、资质要求、技术规格、格式要求）提取完整性 ≥ 95%（通过召回率测试验证）
+4. 关键信息（评分标准、资质要求、技术规格、格式要求）提取完整性 ≥ 90%（通过召回率测试验证）
 5. 端到端处理时间：纯文本 PDF ≤ 10 分钟；含 OCR 的扫描 PDF ≤ 30 分钟（200MB 文件）
 6. 小文件（≤50MB）行为完全不变
 7. 支持断点续传：解析中断后可从最后成功页面继续
@@ -82,11 +136,11 @@ result["parsed_content"] = raw_text           # 全文存入 AgentState
 - **解析时同步构建倒排索引** — 关键词 → 页码列表，搜索时 O(1) 查表，非 O(N) 扫描
 - **下游节点通过 Reader 按需读取** — 需要哪部分内容就取哪部分
 - **预算分配保证搜索结果不被截断**（NC1 修复）— 每类信息分配固定字符预算
-- **两阶段 OCR 消除 segfault 风险**（NC2 修复）— 主线程预渲染 + 线程池并行推理
+- **两阶段 OCR 消除 segfault 风险**（NC2 修复）— 主线程预渲染 + 进程池并行推理
 - **分批预渲染控制内存峰值**（NC4 修复）— 每批≤50页，避免 750 页全量预渲染 OOM
 - **OCR 回写清理旧索引**（NC5 修复）— remove_page 清除占位文本 token，防止残留
 - **懒加载避免初始化内存尖峰**（NC6 修复）— ParsedDocumentReader 统一为 @property 懒加载
-- **多用户并发限流**（Major 修复）— 信号量控制同时解析数和 OCR 线程数
+- **多用户并发限流**（Major 修复）— 信号量控制同时解析数和 OCR 进程数
 
 ### 2.2 策略架构图
 
@@ -112,7 +166,7 @@ result["parsed_content"] = raw_text           # 全文存入 AgentState
 │                                                                      │
 │  阶段 2b: 批量并行 OCR（NC4: 分批预渲染，每批≤50页，控制内存峰值）    │
 │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐            │
-│  │ Phase A: 主线程│→ │ Phase B: 线程池│→ │ 回写：更新页  │            │
+│  │ Phase A: 主线程│→ │ Phase B: 进程池│→ │ 回写：更新页  │            │
 │  │ 预渲染为 numpy │  │ PaddleOCR 推理 │  │ 面文件+重建  │            │
 │  │ (每批≤50页)   │  │ (不接触 fitz)  │  │ 索引(NC5)    │            │
 │  └───────────────┘  └───────────────┘  └───────────────┘            │
@@ -286,20 +340,25 @@ class IncrementalIndexBuilder:
     
     C2 修复：替代原来需要 list[PageResult] 的 _build_inverted_index。
     每次调用 add_page() 时更新索引，内存只保留索引结构本身。
+    
+    C-13 修复（v6）：增加反向索引 _page_to_tokens: dict[int, set[str]]，
+    remove_page 从 O(N) 遍历全部 token 优化为 O(K)（K=该页 token 数）。
+    原方案遍历 50K-80K 个 token，750 扫描页 = 60M 次操作，批量 OCR 回写时性能灾难。
     """
-    _index: dict[str, list[int]] = field(default_factory=dict)
+    _index: dict[str, set[int]] = field(default_factory=dict)  # C-13: list→set，O(1) 去重
+    _page_to_tokens: dict[int, set[str]] = field(default_factory=dict)  # C-13: 反向索引
     
     def add_page(self, page_num: int, text: str) -> None:
         """将一页文本加入索引（增量更新）."""
         tokens = _tokenize_chinese(text)
-        for token in tokens:  # 已去重
+        self._page_to_tokens[page_num] = tokens  # C-13: 记录反向索引
+        for token in tokens:
             if token not in self._index:
-                self._index[token] = []
-            if page_num not in self._index[token]:
-                self._index[token].append(page_num)
+                self._index[token] = set()
+            self._index[token].add(page_num)  # C-13: set.add() O(1)
     
     def remove_page(self, page_num: int) -> None:
-        """从索引中移除指定页的所有 token（NC5 修复）.
+        """从索引中移除指定页的所有 token（NC5 修复 + C-13 性能优化）.
         
         NC5 问题：OCR 回写时直接 add_page 会在占位文本 token 之上追加
         OCR 真实文本 token，导致占位文本的 token 残留在索引中，
@@ -307,26 +366,39 @@ class IncrementalIndexBuilder:
         
         NC5 修复：在 add_page 写入 OCR 真实文本前，先 remove_page
         清除该页在索引中的所有旧记录。
+        
+        C-13 修复（v6）：通过反向索引 _page_to_tokens 直接定位该页的 token，
+        O(K) 复杂度（K=该页 token 数 ~800），替代原方案 O(N) 遍历全部 token（N~80K）。
         """
+        if page_num not in self._page_to_tokens:
+            return  # 该页不在索引中
+        
+        tokens_to_remove = self._page_to_tokens[page_num]
         empty_tokens: list[str] = []
-        for token, pages in self._index.items():
-            if page_num in pages:
-                pages.remove(page_num)
-                if not pages:
+        
+        for token in tokens_to_remove:  # C-13: 只遍历该页的 token
+            if token in self._index:
+                self._index[token].discard(page_num)  # C-13: set.discard() O(1)
+                if not self._index[token]:
                     empty_tokens.append(token)
+        
         # 清理空 token 条目，防止索引膨胀
         for token in empty_tokens:
             del self._index[token]
+        
+        # 清理反向索引
+        del self._page_to_tokens[page_num]
     
     def to_dict(self) -> dict[str, list[int]]:
-        return self._index
+        """序列化为 JSON 兼容格式（set→sorted list）."""
+        return {token: sorted(pages) for token, pages in self._index.items()}
 
 
 def _stream_parse_pdf(
     file_path: str,
     parsed_dir: Path,
     progress_callback: Callable[[int, int], None] | None = None,
-) -> tuple[IncrementalIndexBuilder, list[dict], list[dict], int]:
+) -> tuple[IncrementalIndexBuilder, list[dict], list[dict], int, dict]:
     """流式解析 PDF，逐页写磁盘 + 增量构建倒排索引.
     
     C2 修复：索引在循环内增量构建，不再需要收集全部 PageResult 到 list。
@@ -334,14 +406,31 @@ def _stream_parse_pdf(
     NC3 修复：两阶段 OCR — 流式解析时仅记录扫描页索引，解析完成后批量并行 OCR。
     M1 修复：total_chars 在流式循环中累加实际字符数，不再使用索引估算。
     
+    v7.1 M-V7-01: 返回类型标注更新为 5 元组（含 meta dict）。
+    
     Returns:
-        (index_builder, all_tables, chapter_index, total_chars)
+        (index_builder, all_tables, chapter_index, total_chars, parse_meta)
     """
     import fitz
+    import time as _time
+    import os  # C-12: os.replace 原子写入
+    
+    # C-11: 记录解析开始时间
+    _parse_start = _time.time()
+    
+    # C-11: 在打开文件前先做格式预检
+    probe_info = _probe_pdf(file_path)
     
     doc = fitz.open(file_path)
     pages_dir = parsed_dir / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
+    
+    # C-07 修复（v6）：统一使用 PageBlobReader 写入页面，替代 page_file.write_text
+    # 原方案 PageBlobReader 仅在读取侧使用，写入侧仍用逐页文件，导致 pages.blob 永远不生成
+    # v7 NC-03: 增加 keep_page_files 配置，默认 False（只写 blob），调试时可设为 True
+    # v7.1 C-V7-01: 修正缩进（原零缩进导致 IndentationError）
+    KEEP_PAGE_FILES = False  # v7 NC-03: 默认关闭逐页文件写入
+    blob_reader = PageBlobReader(parsed_dir)
     
     # M6: 断点续传 — 读取已解析进度
     progress_file = parsed_dir / "progress.json"
@@ -364,7 +453,14 @@ def _stream_parse_pdf(
     # M6: 如果断点续传，恢复已解析的索引和表格
     if start_page > 0:
         existing_index = json.loads((parsed_dir / "inverted_index.json").read_text())
-        index_builder._index = existing_index
+        # C-13: 恢复为 set 格式 + 重建反向索引
+        index_builder._index = {k: set(v) for k, v in existing_index.items()}
+        index_builder._page_to_tokens = {}  # C-13: 重建反向索引
+        for token, pages in index_builder._index.items():
+            for pg in pages:
+                if pg not in index_builder._page_to_tokens:
+                    index_builder._page_to_tokens[pg] = set()
+                index_builder._page_to_tokens[pg].add(token)
         existing_tables = json.loads((parsed_dir / "tables.json").read_text())
         all_tables = existing_tables
     
@@ -413,9 +509,14 @@ def _stream_parse_pdf(
                 pass
             all_tables.extend(tables)
             
-            # 4. 写入磁盘（逐页写文件）
-            page_file = pages_dir / f"page_{page_num:04d}.txt"
-            page_file.write_text(page_text, encoding="utf-8")
+            # 4. 写入磁盘 — C-07 修复：统一使用 PageBlobReader
+            # C-07: 原 page_file.write_text(page_text) 改为 blob_reader.write_page
+            # v7.1 C-V7-01: 修正缩进（原零缩进导致 IndentationError）
+            blob_reader.write_page(page_num, page_text)
+            # v7 NC-03: 逐页文件默认不写（减少 I/O），调试时可开启 keep_page_files
+            if KEEP_PAGE_FILES:
+                page_file = pages_dir / f"page_{page_num:04d}.txt"
+                page_file.write_text(page_text, encoding="utf-8")
             
             # M1: 流式累加实际字符数
             total_chars += len(page_text)
@@ -424,7 +525,7 @@ def _stream_parse_pdf(
             index_builder.add_page(page_num, page_text)
             
             # 6. M2: 章节检测（见 §3.9 章节自动切分）
-            chapter_match = _detect_chapter_boundary(page_text, page_num)
+            chapter_match = _detect_chapter_boundary(page_text, page_num, probe_info=probe_info)
             if chapter_match:
                 # 保存上一章节
                 if current_chapter and chapter_text_parts:
@@ -435,13 +536,25 @@ def _stream_parse_pdf(
             elif current_chapter:
                 chapter_text_parts.append(page_text)
             
-            # 7. M6: 写入进度（每页更新）
-            progress_file.write_text(json.dumps({
+            # 7. M6: 写入进度（每页更新）— C-12 修复：原子写入
+            # C-12: 原 write_text 非原子写，崩溃中途中写会损坏 JSON
+            # 修复：先写 .tmp 文件，再 os.replace 原子替换
+            progress_data = json.dumps({
                 "last_completed_page": page_num,
                 "total_pages": total_pages,
                 "scan_page_indices": scan_page_indices,  # NC3: 持久化扫描页索引
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-            }))
+            })
+            tmp_path = progress_file.with_suffix(".tmp")
+            tmp_path.write_text(progress_data)
+            os.replace(tmp_path, progress_file)  # C-12: 原子替换
+            
+            # C-12: 每 50 页增量落盘倒排索引，防止崩溃丢失全部索引
+            if page_num % 50 == 0:
+                blob_reader.flush_offsets()  # C-07: 同步偏移量索引
+                idx_tmp = (parsed_dir / "inverted_index.json").with_suffix(".tmp")
+                idx_tmp.write_text(json.dumps(index_builder.to_dict(), ensure_ascii=False))
+                os.replace(idx_tmp, parsed_dir / "inverted_index.json")
             
             # 8. M5: 进度回调
             if progress_callback:
@@ -466,20 +579,35 @@ def _stream_parse_pdf(
                 doc=doc,
                 scan_page_indices=scan_page_indices,
                 parsed_dir=parsed_dir,
-                # M4 修复：动态计算 OCR 线程数，避免跨用户 CPU 过载
-                max_workers=_calc_ocr_workers(requested=4),
+                # M4 修复：动态计算 OCR 进程数，避免跨用户 CPU 过载
+                # v7.2 C-V7.1-01: 删除调用方的 _calc_ocr_workers，避免信号量双重获取
+                # 信号量 acquire 在 _ocr_batch_parallel_safe 内部 _calc_ocr_workers 中完成
+                max_workers=4,
             )
             
             # 回写 OCR 结果：更新页面文件 + 重建索引
             # NC5 修复：先 remove_page 清除占位文本的旧 token，再 add_page 写入真实 OCR 文本
             # M1 修复：累加 OCR 文本字符数（减去占位文本的字符数）
+            # C-07 修复：OCR 回写也统一使用 PageBlobReader
+            ocr_success_count = 0  # C-11: 用于 _build_meta
+            ocr_failed_pages: list[int] = []  # C-11: 用于 _build_meta
             for page_idx_0, ocr_text in ocr_results.items():
                 page_num = page_idx_0 + 1
-                page_file = pages_dir / f"page_{page_num:04d}.txt"
+                # C-07: 统一使用 PageBlobReader 写入 OCR 结果
+                # v7.1 C-V7-01: 修正缩进（原零缩进导致 IndentationError）
+                blob_reader.write_page(page_num, ocr_text)
+                # v7 NC-03: 逐页文件默认不写，调试时可通过 keep_page_files 开启
+                if KEEP_PAGE_FILES:
+                    page_file = pages_dir / f"page_{page_num:04d}.txt"
+                    page_file.write_text(ocr_text, encoding="utf-8")
                 # M1: 减去占位文本字符数，加上 OCR 真实文本字符数
+                # 修复：OCR 返回空串时 total_chars 会减小（减成负数），增加保护
                 placeholder_text = f"[扫描页 — 待 OCR: 第 {page_num} 页]"
-                total_chars += len(ocr_text) - len(placeholder_text)
-                page_file.write_text(ocr_text, encoding="utf-8")
+                if ocr_text:  # 修复：OCR 成功时才更新字符数
+                    total_chars += len(ocr_text) - len(placeholder_text)
+                    ocr_success_count += 1
+                else:
+                    ocr_failed_pages.append(page_num)
                 # NC5: 移除占位文本的旧 token，防止残留
                 index_builder.remove_page(page_num)
                 # 加入真实 OCR 文本
@@ -491,18 +619,28 @@ def _stream_parse_pdf(
         
         doc.close()
     
-    # 写入最终索引文件
-    (parsed_dir / "inverted_index.json").write_text(
-        json.dumps(index_builder.to_dict(), ensure_ascii=False)
-    )
-    (parsed_dir / "tables.json").write_text(
-        json.dumps(all_tables, ensure_ascii=False)
-    )
+    # 写入最终索引文件 — C-12: 原子写入
+    blob_reader.flush_offsets()  # C-07: 最终同步偏移量索引
+    idx_tmp = (parsed_dir / "inverted_index.json").with_suffix(".tmp")
+    idx_tmp.write_text(json.dumps(index_builder.to_dict(), ensure_ascii=False))
+    os.replace(idx_tmp, parsed_dir / "inverted_index.json")
+    
+    tbl_tmp = (parsed_dir / "tables.json").with_suffix(".tmp")
+    tbl_tmp.write_text(json.dumps(all_tables, ensure_ascii=False))
+    os.replace(tbl_tmp, parsed_dir / "tables.json")
     
     # M6: 解析完成，删除进度文件
     progress_file.unlink(missing_ok=True)
     
-    return index_builder, all_tables, chapter_index, total_chars
+    # C-11 修复（v6）：返回更多元信息供 _build_meta 使用
+    _parse_duration = _time.time() - _parse_start
+    return index_builder, all_tables, chapter_index, total_chars, {
+        "probe_info": probe_info,  # C-11: _probe_pdf 的结果
+        "scan_page_count": len(scan_page_indices),
+        "ocr_page_count": ocr_success_count if scan_page_indices else 0,
+        "ocr_failed_pages": ocr_failed_pages if scan_page_indices else [],
+        "parse_duration_sec": round(_parse_duration, 1),
+    }
 ```
 
 #### 3.2.2 倒排索引分词器（C1 修复：中文 bigram + 子串匹配）
@@ -548,24 +686,57 @@ def _tokenize_chinese(text: str) -> set[str]:
         tokens.add(match.group())
     
     # 过滤纯标点 bigram
+    # v7 遗留-04 修复：补充代词/量词/连词/介词/助词停用词
+    _STOPWORD_BIGRAMS = {
+        # 原有标点
+        '，。', '。、', '、；', '；：', '：！', '！？',
+        # 代词
+        '我的', '你的', '他的', '她的', '它的', '我们', '你们', '他们', '她们',
+        '它们', '这是', '那是', '这是', '哪些', '哪个', '什么', '怎么',
+        # 量词
+        '一个', '一种', '一项', '一批', '一类', '这个', '那个', '本次', '此本',
+        # 连词/介词
+        '因此', '所以', '因为', '由于', '对于', '关于', '至于', '除了',
+        '不仅', '而且', '虽然', '但是', '然而', '即使', '尽管',
+        # 助词
+        '的了', '是吗', '呢吧', '而已', '的话',
+        # 常见无意义 bigram
+        '的条', '的款', '的项', '为了', '以及', '及其', '或者',
+    }
+    tokens = {t for t in tokens if t not in _STOPWORD_BIGRAMS}
+    # 兜底：过滤纯标点
     tokens = {t for t in tokens if not all(c in '，。、；：！？的了吗呢吧' for c in t)}
     
     return tokens
 
 
 def _tokenize_query(keywords: list[str]) -> list[str]:
-    """将搜索关键词拆分为 bigram（与索引使用相同分词器）.
+    """将搜索关键词拆分为 bigram + 英数整词（与索引使用相同分词器）.
     
-    确保 search_pages 的查询 key 与倒排索引的 key 严格匹配。
+    C-05 修复（v6）：原方案对整个查询串做 bigram（含英数），但索引器对英文/数字
+    用整词提取（[a-zA-Z]{2,}|[0-9]{2,}），导致英数查询 100% 失败。
+    例如搜索"ISO9001"→原查询 bigram ["IS","SO","O9","90","00","01"]，索引中却是
+    "ISO"、"9001"，完全不匹配。
+    
+    修复方案：_tokenize_query 改为先按 [\\u4e00-\\u9fa5]+|[a-zA-Z]{2,}|[0-9]{2,}
+    切片，中文片段做 bigram，英数片段整词查询 — 与索引器 _tokenize_chinese 对齐。
     """
     query_tokens: list[str] = []
     for kw in keywords:
-        if len(kw) <= 2:
-            query_tokens.append(kw)
-        else:
-            # 长关键词拆分为 bigram
-            for i in range(len(kw) - 1):
-                query_tokens.append(kw[i:i + 2])
+        # C-05: 统一切片逻辑 — 与 _tokenize_chinese 完全一致
+        for match in re.finditer(r'[\u4e00-\u9fa5]+|[a-zA-Z]{2,}|[0-9]{2,}', kw):
+            segment = match.group()
+            # 检查是中文还是英数
+            if re.match(r'[\u4e00-\u9fa5]', segment):
+                # 中文片段：生成 bigram
+                if len(segment) <= 2:
+                    query_tokens.append(segment)
+                else:
+                    for i in range(len(segment) - 1):
+                        query_tokens.append(segment[i:i + 2])
+            else:
+                # 英文/数字片段：整词查询（与索引一致）
+                query_tokens.append(segment)
     return query_tokens
 ```
 
@@ -574,6 +745,7 @@ def _tokenize_query(keywords: list[str]) -> list[str]:
 - 含「评分标准」的页面 → 索引含 `"评分"` → ✅ 命中
 - 含「评标办法」的页面 → 索引含 `"评标"` → ✅ 命中
 - 含「分值分配」的页面 → 索引含 `"分值"` → ✅ 命中
+- C-05 修复验证：搜索 `["ISO9001", "GB/T"]` → 查询 tokens: `["ISO", "9001", "GB"]`（英数整词）→ 索引中匹配 `"ISO"`、`"9001"`、`"GB"` → ✅ 命中
 - 预期召回率：≥ 90%（仅遗漏不含任何 bigram 匹配的极端情况）
 
 #### 3.2.3 倒排索引内存占用分析（Major 修复）
@@ -600,13 +772,32 @@ JSON 序列化大小：
 
 结论：倒排索引内存占用 ~16-20MB，完全可控。
 Reader 懒加载时反序列化 ~4MB JSON ≈ 0.5-1 秒，可接受。
+
+v7 NC-07 补充：反向索引 _page_to_tokens 内存
+```
+反向索引 _page_to_tokens: dict[int, set[str]]
+- 每个 page 对应一个 set[str]，存储该页的所有 token（~800 unique bigram/页）
+- 单个 set 内存：~800 × 60 字节 ≈ 48KB/页
+- 2000 页 × 48KB = ~96MB
+- 去重后（跨页共享 token）：实际 ~60-80MB
+
+反向索引总内存：~60-80MB
+正向索引 dict[str, list[int]] 内存：~16-20MB
+倒排索引模块总内存：~76-100MB
+
+JSON 序列化时仅保存正向索引（反向索引是运行时辅助结构，不持久化）。
+加载时重建反向索引：~80MB dict 构建 ≈ 2-3 秒（可接受，首次 search 时触发）。
 ```
 
-| 文档规模 | 页数 | Unique Bigram | JSON 大小 | 内存占用 | 加载时间 |
-|---------|------|--------------|----------|---------|---------|
-| 小（50MB） | 500 | ~20,000 | ~1MB | ~5MB | ~0.2s |
-| 中（200MB） | 2000 | ~80,000 | ~4MB | ~20MB | ~0.5s |
-| 大（500MB） | 5000 | ~150,000 | ~8MB | ~40MB | ~1.0s |
+| 文档规模 | 页数 | Unique Bigram | JSON 大小 | 正向索引内存 | 反向索引内存 | 总内存 | 加载时间 |
+|---------|------|--------------|----------|------------|------------|--------|---------|
+| 小（50MB） | 500 | ~20,000 | ~1MB | ~5MB | ~20MB | ~25MB | ~0.2s |
+| 中（200MB） | 2000 | ~80,000 | ~4MB | ~20MB | ~80MB | ~100MB | ~0.5s |
+| 大（500MB） | 5000 | ~150,000 | ~8MB | ~40MB | ~200MB | ~240MB | ~1.0s |
+
+> 注意：2000 页文档反向索引 ~80MB 内存，加上 PaddleOCR 4 worker ~6GB，
+> 总峰值内存 ~6.1GB，在 8GB+ 服务器上可控。
+```
 
 ### 3.3 阶段 3：磁盘持久化
 
@@ -624,9 +815,9 @@ data/parsed/{document_id}/
 ├── pages.blob             # 合并存储（优化模式，见 §3.3.2）
 ├── page_offsets.json      # 偏移量索引（配合 pages.blob）
 ├── tables.json            # 全部表格（结构化 JSON）
-└── sections/
-    ├── chapter_01.txt     # 按章节合并的文本
-    └── ...
+├── chapters/               # C-02 修复：重命名 sections→chapters
+│   ├── chapter_01.txt     # 按章节合并的文本
+│   └── ...
 ```
 
 #### 3.3.2 磁盘 I/O 优化：合并文件 + 偏移量索引（Major 修复）
@@ -651,19 +842,33 @@ class PageBlobReader:
     
     写入时追加到 blob 文件末尾，记录 [offset, length]。
     读取时 seek + read，O(1) 定位，无系统调用开销。
+    
+    C-07 修复（v6）：统一写入路径 — _stream_parse_pdf 中使用此类写入页面，
+    替代原 page_file.write_text，确保 pages.blob 真正生成。
+    
+    线程安全修复（v6）：增加 threading.Lock 保护写入操作，
+    修复 stat().st_size 与 write 之间的 TOCTOU 竞态。
     """
     
     def __init__(self, parsed_dir: Path):
         self.blob_path = parsed_dir / "pages.blob"
-        self.offsets = json.loads((parsed_dir / "page_offsets.json").read_text())
+        self.offsets_path = parsed_dir / "page_offsets.json"
+        # 线程安全：保护 write_page 的偏移量计算
+        self._write_lock = threading.Lock()
+        if self.offsets_path.exists():
+            self.offsets = json.loads(self.offsets_path.read_text())
+        else:
+            self.offsets = {}
     
     def write_page(self, page_num: int, text: str) -> None:
-        """追加写入一页文本到 blob 文件."""
+        """追加写入一页文本到 blob 文件（线程安全）."""
         encoded = text.encode("utf-8")
-        offset = self.blob_path.stat().st_size if self.blob_path.exists() else 0
-        with open(self.blob_path, "ab") as f:
-            f.write(encoded)
-        self.offsets[str(page_num)] = [offset, len(encoded)]
+        with self._write_lock:  # 线程安全保护
+            # 修复 TOCTOU：用 open "ab" 的 f.tell() 替代 stat().st_size
+            with open(self.blob_path, "ab") as f:
+                offset = f.tell()
+                f.write(encoded)
+            self.offsets[str(page_num)] = [offset, len(encoded)]
     
     def read_page(self, page_num: int) -> str:
         """通过偏移量读取单页文本."""
@@ -676,10 +881,26 @@ class PageBlobReader:
             return f.read(length).decode("utf-8")
     
     def flush_offsets(self) -> None:
-        """将偏移量索引写入磁盘."""
-        (self.blob_path.parent / "page_offsets.json").write_text(
-            json.dumps(self.offsets, ensure_ascii=False)
-        )
+        """将偏移量索引写入磁盘（原子写入）."""
+        # C-12: 原子写入
+        tmp = self.offsets_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.offsets, ensure_ascii=False))
+        os.replace(tmp, self.offsets_path)
+    
+    def update_page(self, page_num: int, text: str) -> None:
+        """更新已有页面内容（OCR 回写场景）.
+        
+        v6 新增：OCR 回写时，旧占位文本残留在 blob 中，新 OCR 文本追加到末尾。
+        偏移量索引更新为新位置，旧块标记为废弃。
+        长期累积的废弃块由清理策略定期 compact。
+        """
+        encoded = text.encode("utf-8")
+        with self._write_lock:
+            with open(self.blob_path, "ab") as f:
+                offset = f.tell()
+                f.write(encoded)
+            # 更新偏移量指向新位置（旧块自然废弃）
+            self.offsets[str(page_num)] = [offset, len(encoded)]
 ```
 
 **性能对比**：
@@ -736,7 +957,7 @@ class PageBlobReader:
         "qualification_tables": 15,
         "scan_page_ratio": 0.012,
     },
-    "sections": [                        # 新增：章节索引
+    "chapter_index": [                   # C-02 修复：重命名 sections→chapter_index，避免与 AgentState 顶层 sections:dict[str,str] 类型冲突
         {"name": "第一章 投标须知", "key": "ch1", "page_range": [1, 45]},
         ...
     ],
@@ -763,15 +984,24 @@ def _parse_single_doc(file_record: dict, chunk_size: int = CHUNK_SIZE) -> dict:
     if file_size > LARGE_FILE_THRESHOLD:
         # ── streaming 模式 ──
         parsed_dir = _create_parsed_dir(file_record)
-        index_builder, tables, chapter_index, total_chars = _stream_parse_pdf(
+        # C-11: _stream_parse_pdf 现在返回 5 元组（含元信息 dict）
+        index_builder, tables, chapter_index, total_chars, parse_meta = _stream_parse_pdf(
             file_path, parsed_dir, progress_callback=None
         )
         result.update({
             "status": "parsed",
             "parse_mode": "streaming",
             "parsed_dir": str(parsed_dir),
-            "meta": _build_meta(file_path, tables, index_builder, total_chars=total_chars),
-            "sections": chapter_index,
+            "meta": _build_meta(
+                file_path, tables, index_builder,
+                total_chars=total_chars,
+                probe_info=parse_meta["probe_info"],
+                scan_page_count=parse_meta["scan_page_count"],
+                ocr_page_count=parse_meta["ocr_page_count"],
+                ocr_failed_pages=parse_meta["ocr_failed_pages"],
+                parse_duration_sec=parse_meta["parse_duration_sec"],
+            ),  # C-11 修复：补全调用链
+            "chapter_index": chapter_index,  # C-02 修复：重命名 sections→chapter_index
             # M7 修复：以下字段必须为空，否则全文会进入 AgentState
             "parsed_content": "",     # ← 空
             "raw_text": "",           # ← 空（v2 遗漏）
@@ -825,7 +1055,9 @@ class ParsedDocumentReader:
         # 手动 LRU 缓存（不能用 @lru_cache，因为 self 不 hashable）
         from collections import OrderedDict
         self._page_cache: OrderedDict[int, str] = OrderedDict()
-        self._cache_max_size = 50
+        # P2 优化（v6）：LRU 容量 50→200 页，200×3000字符≈600KB 仍可控
+        # 原 50 页太小：search_pages(top_k=20) 一次就可能填满，get_summary 再取 10 页频繁淘汰
+        self._cache_max_size = 200
     
     @property
     def meta(self) -> dict:
@@ -888,7 +1120,7 @@ class ParsedDocumentReader:
     
     def get_section(self, section_key: str) -> str:
         """读取指定章节的完整文本."""
-        path = self.parsed_dir / "sections" / f"{section_key}.txt"
+        path = self.parsed_dir / "chapters" / f"{section_key}.txt"  # C-02: sections→chapters
         return path.read_text(encoding="utf-8") if path.exists() else ""
     
     def get_tables(self, table_type: str | None = None) -> list[dict]:
@@ -1078,7 +1310,13 @@ def _assemble_relevant_content(
         max_pages: int = 3,
         per_page_limit: int = 800,
     ) -> None:
-        """在字符预算内添加一组搜索结果（去重 + 截断）."""
+        """在字符预算内添加一组搜索结果（去重 + 截断）.
+        
+        P2 优化（v6）：per_page_limit 按类别差异化
+        - scoring/qualification: 1200（评分表单页常 >800 字符，含多条评分项）
+        - tech_spec: 800（技术规格适中）
+        - format: 600（格式要求简短）
+        """
         used = 0
         for page in sorted(pages, key=lambda p: p.hit_count, reverse=True)[:max_pages]:
             if page.page_num in seen_pages:
@@ -1096,17 +1334,17 @@ def _assemble_relevant_content(
     project_text = first_pages[:project_budget]
     parts.append(f"--- 项目基本信息 ---\n{project_text}")
 
-    # 2. 评分标准（倒排索引搜索结果）
-    add_group("评分标准", scoring_pages, _BUDGET_ALLOC["scoring"])
+    # 2. 评分标准（倒排索引搜索结果）— P2: per_page_limit=1200
+    add_group("评分标准", scoring_pages, _BUDGET_ALLOC["scoring"], per_page_limit=1200)
 
-    # 3. 资质要求
-    add_group("资质要求", qual_pages, _BUDGET_ALLOC["qualification"])
+    # 3. 资质要求 — P2: per_page_limit=1200
+    add_group("资质要求", qual_pages, _BUDGET_ALLOC["qualification"], per_page_limit=1200)
 
-    # 4. 技术规格
-    add_group("技术规格", tech_pages, _BUDGET_ALLOC["tech_spec"])
+    # 4. 技术规格 — P2: per_page_limit=800
+    add_group("技术规格", tech_pages, _BUDGET_ALLOC["tech_spec"], per_page_limit=800)
 
-    # 5. 格式要求
-    add_group("格式要求", format_pages, _BUDGET_ALLOC["format"])
+    # 5. 格式要求 — P2: per_page_limit=600
+    add_group("格式要求", format_pages, _BUDGET_ALLOC["format"], per_page_limit=600)
 
     # 6. 合并并做最终安全截断
     combined = "\n\n".join(parts)
@@ -1153,36 +1391,12 @@ parsed_dir = _create_parsed_dir(file_record)
 # document_id 由 _create_parsed_dir 内部通过 md5(filename + file_path) 生成
 # 同一文件重复上传会复用同一目录，支持断点续传
 
-# TTL 清理
-def _cleanup_old_parsed_dirs(max_age_hours: int = 72):
-    parsed_root = Path("data/parsed")
-    if not parsed_root.exists():
-        return
-    
-    now = time.time()
-    for doc_dir in parsed_root.iterdir():
-        if not doc_dir.is_dir():
-            continue
-        meta_path = doc_dir / "meta.json"
-        if not meta_path.exists():
-            continue
-        
-        meta = json.loads(meta_path.read_text())
-        parsed_at = meta.get("parsed_at", "")
-        if not parsed_at:
-            continue
-        
-        try:
-            parsed_time = datetime.fromisoformat(parsed_at)
-            age_hours = (now - parsed_time.timestamp()) / 3600
-            if age_hours > max_age_hours:
-                shutil.rmtree(doc_dir, ignore_errors=True)
-                logger.info(f"Cleaned old parsed dir: {doc_dir.name}")
-        except Exception as e:
-            logger.warning(f"Failed to cleanup {doc_dir.name}: {e}")
+# TTL 清理（v7.1 M-V7-13: 统一使用 _cleanup_expired_parsed_dirs，定义见 §3.8）
+# 原 _cleanup_old_parsed_dirs 已合并到 _cleanup_expired_parsed_dirs
+# 统一使用 meta.json 的 parsed_at 为主，st_mtime 为兑底
 
 # 启动和重置时调用
-_cleanup_old_parsed_dirs()
+_cleanup_expired_parsed_dirs()
 ```
 
 #### 3.5.3 LangGraph 状态传播（C5 修复：API 签名修正）
@@ -1217,153 +1431,146 @@ result = generation_graph.invoke(phase2_state)
 
 ### 3.6 OCR 完整集成策略（M1 + M3 修复）
 
-#### 3.6.1 _ocr_page 完整实现（M1 修复）
+#### 3.6.1 PaddleOCR 引擎管理 + 超时机制（v7 统一重构）
 
-**M1 问题**：v2 引用了 `_ocr_page(page)` 但没有任何实现设计。
+> **v7 重构说明**：v6 的 C-08（线程级实例池）和 C-09（子进程超时）存在架构矛盾：
+> - C-08 的 `_ocr_engine_pool` 是进程内字典，子进程无法访问
+> - C-09 每页启动新子进程，PaddleOCR 模型加载 10-30s/次，750 页 = 4.5+ 小时
+>
+> v7 统一为 **ProcessPoolExecutor + initializer** 方案：
+> - worker 进程启动时通过 `initializer` 预加载 PaddleOCR，整个 OCR 批次内复用
+> - 超时后 `terminate()` 真正回收子进程资源
+> - 放弃线程级实例池（进程池自带隔离，不需要）
 
 ```python
-def _ocr_page(
-    page: "fitz.Page",
-    page_num: int,
-    parsed_dir: Path,
-    dpi: int = 200,
-    timeout_sec: int = 30,
-) -> str:
-    """对单页进行 OCR 文本提取.
+# ── PaddleOCR 进程级单例 ──────────────────────────────────────────────
+
+# v7: 每个 worker 进程的全局 PaddleOCR 实例（由 initializer 预加载）
+_worker_ocr_engine = None
+
+def _ocr_worker_init():
+    """ProcessPoolExecutor initializer — 每个 worker 进程启动时加载一次 PaddleOCR.
     
-    M1 完整设计：
-    1. 使用 fitz 渲染页面为图片（page.get_pixmap）
-    2. 使用 PaddleOCR 进行中文识别
-    3. 超时保护（防止单页 OCR 卡死整个解析流程）
-    4. 内存管理（渲染后立即释放图片数据）
-    5. OCR 结果持久化（写入 ocr_NNNN.txt，避免重复 OCR）
+    v7 NC-01/NC-02 修复核心：
+    - 模型加载 10-30s 只在 worker 进程启动时发生一次
+    - 后续所有 OCR 任务复用同一实例，无重复加载
+    - max_workers=4 时仅加载 4 次模型（v6 C-09 方案加载 750 次）
     
-    Args:
-        page: fitz.Page 对象
-        page_num: 页码（1-based）
-        parsed_dir: 解析结果目录（用于缓存 OCR 结果）
-        dpi: 渲染分辨率（200 DPI 平衡质量和速度）
-        timeout_sec: 单页 OCR 超时时间
+    内存估算：
+    - 每个 PaddleOCR 实例常驻 ~1.5GB（CPU 模式）
+    - 4 个 worker = ~6GB（默认配置，可接受）
+    - 极端场景 8 个 worker = ~12GB（_MAX_CONCURRENT_OCR=8，需确保内存充足）
+    - 若内存不足，减少 max_workers 到 2（~3GB）
     
-    Returns:
-        OCR 提取的文本，失败时返回空字符串
+    v7.2 C-V7.1-02: 添加 logging.basicConfig，确保 spawn 方式下子进程日志可见。
     """
-    # 1. 检查 OCR 缓存（断点续传时避免重复 OCR）
+    global _worker_ocr_engine
+    # v7.2 C-V7.1-02: spawn 方式下子进程不继承父进程 logger 配置
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [PID=%(process)d] %(levelname)s %(message)s',
+    )
+    try:
+        from paddleocr import PaddleOCR
+        _worker_ocr_engine = PaddleOCR(
+            use_angle_cls=True,  # 方向分类
+            lang="ch",           # 中文
+            show_log=False,
+            use_gpu=False,       # CPU 模式
+            # 版本锁定：paddleocr==2.7.0.3 + paddlepaddle==2.6.1
+        )
+        import os
+        logger.info(f"PaddleOCR engine loaded in worker PID={os.getpid()} (CPU mode)")
+    except ImportError:
+        logger.warning(f"PaddleOCR not installed — OCR disabled in worker PID={os.getpid()}")
+        _worker_ocr_engine = None
+    except Exception as e:
+        logger.warning(f"Failed to init PaddleOCR in worker: {e}")
+        _worker_ocr_engine = None
+
+
+def _ocr_worker_task(
+    page_idx: int,
+    img_bytes: bytes,
+    img_shape: tuple,
+    img_dtype: str,
+    parsed_dir_str: str,
+    timeout_sec: int,
+) -> tuple[int, str]:
+    """在已初始化的 worker 进程中执行 OCR（复用预加载的引擎）.
+    
+    v7 NC-01 修复：不再每页创建新 PaddleOCR 实例，直接使用 _worker_ocr_engine。
+    v7 NC-02 修复：不再需要 _ocr_engine_pool（进程池自带隔离）。
+    
+    v7.1 M-V7-05: 统一使用 logger（_ocr_worker_init 中已配置 basicConfig）。
+    v7.1 m-V7-01: timeout_sec 参数仅供文档参考，实际超时由父进程 future.result() 控制。
+    """
+    global _worker_ocr_engine
+    
+    if _worker_ocr_engine is None:
+        return (page_idx, "")
+    
+    page_num = page_idx + 1
+    parsed_dir = Path(parsed_dir_str)
+    
+    # 检查 OCR 缓存
     ocr_cache_file = parsed_dir / "pages" / f"ocr_{page_num:04d}.txt"
     if ocr_cache_file.exists():
-        return ocr_cache_file.read_text(encoding="utf-8")
+        return (page_idx, ocr_cache_file.read_text(encoding="utf-8"))
     
     try:
-        # 2. 渲染页面为图片
-        import fitz
-        zoom = dpi / 72  # fitz 默认 72 DPI
-        mat = fitz.Matrix(zoom, zoom)
-        pixmap = page.get_pixmap(matrix=mat)
-        
-        # 转换为 numpy 数组（PaddleOCR 输入格式）
         import numpy as np
-        img_array = np.frombuffer(pixmap.samples, dtype=np.uint8)
-        img_array = img_array.reshape(pixmap.height, pixmap.width, pixmap.n)
-        if pixmap.n == 4:
-            img_array = img_array[:, :, :3]  # RGBA → RGB
+        # 重建 numpy 数组
+        img_array = np.frombuffer(img_bytes, dtype=img_dtype).reshape(img_shape)
         
-        # 3. 释放 pixmap 内存
-        pixmap = None
+        # 使用预加载的引擎执行 OCR
+        result = _worker_ocr_engine.ocr(img_array)
         
-        # 4. 调用 PaddleOCR（使用全局单例，避免重复加载模型）
-        ocr_engine = _get_ocr_engine()  # 全局单例
-        if ocr_engine is None:
-            logger.warning(f"PaddleOCR not available — skipping OCR for page {page_num}")
-            return ""
-        
-        # 5. 带超时的 OCR 调用
-        result = _ocr_with_timeout(ocr_engine, img_array, timeout_sec)
-        
-        # 6. 提取文本
         if result is None:
-            return ""
+            return (page_idx, "")
         
         text_lines = []
         for line in result:
-            if line and len(line) >= 2:
+            # v7.1 m-V7-04: 增强 None 结果健壮性
+            if line is None:
+                continue
+            if isinstance(line, list) and len(line) >= 2:
                 text_lines.append(line[1][0])  # PaddleOCR: [bbox, (text, confidence)]
         
         ocr_text = "\n".join(text_lines)
         
-        # 7. 写入 OCR 缓存
+        # 写入 OCR 缓存
         ocr_cache_file.write_text(ocr_text, encoding="utf-8")
         
-        return ocr_text
+        return (page_idx, ocr_text)
         
     except Exception as e:
-        logger.warning(f"OCR failed for page {page_num}: {e}")
-        return ""
-
-
-def _ocr_with_timeout(ocr_engine, img_array, timeout_sec: int):
-    """带超时的 OCR 调用（使用 threading + Timer）."""
-    import threading
-    
-    result_box = [None]
-    error_box = [None]
-    
-    def _do_ocr():
-        try:
-            result_box[0] = ocr_engine.ocr(img_array)
-        except Exception as e:
-            error_box[0] = e
-    
-    thread = threading.Thread(target=_do_ocr, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout_sec)
-    
-    if thread.is_alive():
-        logger.warning(f"OCR timed out after {timeout_sec}s")
-        return None  # 线程仍在运行（daemon=True，主进程退出时自动终止）
-    if error_box[0]:
-        raise error_box[0]
-    return result_box[0]
-
-
-# 全局 OCR 引擎单例
-_ocr_engine_instance = None
-
-def _get_ocr_engine():
-    """获取 PaddleOCR 引擎单例（避免重复加载模型）."""
-    global _ocr_engine_instance
-    if _ocr_engine_instance is not None:
-        return _ocr_engine_instance
-    
-    try:
-        from paddleocr import PaddleOCR
-        _ocr_engine_instance = PaddleOCR(
-            use_angle_cls=True,  # 方向分类
-            lang="ch",           # 中文
-            show_log=False,
-            # CPU 模式（不依赖 GPU）
-            use_gpu=False,
-        )
-        logger.info("PaddleOCR engine initialized (CPU mode)")
-        return _ocr_engine_instance
-    except ImportError:
-        logger.warning("PaddleOCR not installed — OCR disabled")
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to init PaddleOCR: {e}")
-        return None
+        logger.warning(f"[OCR Worker] page {page_num} failed: {e}")
+        return (page_idx, "")
 ```
 
-#### 3.6.2 并行 OCR 策略（NC2 修复：预渲染 + 多线程 OCR）
+> **NC-06 修复（v7）**：v6 的 `_ocr_page` 函数（~80 行）是死代码——
+> 整个 spec 中没有任何地方调用它（`_stream_parse_pdf` 只收集 `scan_page_indices`，
+> `_ocr_batch_parallel_safe` 有自己的内联 OCR 逻辑）。
+> v7 已删除 `_ocr_page`，OCR 逻辑统一在 `_ocr_batch_parallel_safe` 中。
+>
+> **版本锁定（v6 保留）**：
+> - requirements: `paddleocr==2.7.0.3`, `paddlepaddle==2.6.1`
+> - 避免使用 `use_gpu`（3.x 已更名为 `device`）
+> - 离线模型预置：提供 `scripts/download_ocr_models.py`
+
+#### 3.6.2 并行 OCR 策略（NC2 修复：预渲染 + 多进程 OCR）
 
 **NC2 问题**：v3 的 `_ocr_batch_parallel` 在线程池中直接调用 `doc[page_idx]` 和 `page.get_pixmap()`，但 PyMuPDF（fitz）的 `Document` 对象**不是线程安全的**。多线程同时访问同一 Document 会导致段错误（segfault）。
 
-**NC2 修复方案**：**预渲染 + 多线程 OCR**
+**NC2 修复方案**：**预渲染 + 多进程 OCR**（v7: 线程池→进程池）
 1. **主线程**（单线程）：遍历所有扫描页，用 fitz 渲染为 numpy 数组（fitz 单线程安全）
-2. **线程池**（多线程）：只对预渲染的 numpy 数组做 OCR 推理（PaddleOCR/ONNX Runtime 线程安全）
+2. **进程池**（多进程）：只对预渲染的 numpy 数组做 PaddleOCR 推理（进程级隔离，天然线程安全）
 3. 渲染后立即释放 pixmap 内存，只保留 numpy 数组
 
 ```python
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError as FutureTimeoutError
 
 
 def _ocr_batch_parallel_safe(
@@ -1375,28 +1582,30 @@ def _ocr_batch_parallel_safe(
     timeout_sec: int = 30,
     batch_size: int = 50,
 ) -> dict[int, str]:
-    """并行 OCR 多个扫描页（NC2 修复 + NC4 修复：分批预渲染 + 多线程 OCR）.
+    """并行 OCR 多个扫描页（NC2 修复 + NC4 修复 + v7 ProcessPool 重构）.
     
-    NC2 修复核心：
+    v7 NC-01/NC-02 修复核心：
+    - 改用 ProcessPoolExecutor + initializer，替代 v6 的 ThreadPoolExecutor + 子进程
+    - worker 进程启动时预加载 PaddleOCR，整个批次内复用
+    - 消除 v6 C-09 每页重新加载模型的性能回归
+    - 消除 v6 C-08 线程级实例池与子进程的架构矛盾
+    
+    NC2 修复核心（保留）：
     - Phase A（主线程，单线程）：用 fitz 渲染扫描页为 numpy 数组
-    - Phase B（线程池，多线程）：只对 numpy 数组做 PaddleOCR 推理
+    - Phase B（进程池，多进程）：只对 numpy 数组做 PaddleOCR 推理
     - fitz Document 对象永远只被主线程访问，杜绝段错误
     
-    NC4 修复核心：
+    NC4 修复核心（保留）：
     - 分批处理：每批最多 batch_size 页（默认 50 页）
     - 每批：渲染 → OCR → 释放内存 → 下一批
     - 单批内存峰值：50 × 11.6MB ≈ 580MB（可控）
     - 避免 750 页全部预渲染导致 8.7GB OOM
     
-    NC3 集成：
-    - 由 _stream_parse_pdf 在流式解析完成后调用
-    - scan_page_indices 在流式解析阶段收集
-    
     Args:
         doc: fitz.Document 对象（必须在调用方保持打开状态）
         scan_page_indices: 需要 OCR 的页面索引列表（0-based）
         parsed_dir: 解析结果目录（用于 OCR 结果缓存）
-        max_workers: OCR 线程池大小
+        max_workers: OCR 进程池大小
         dpi: 渲染分辨率
         timeout_sec: 单页 OCR 超时
         batch_size: 每批预渲染页数（控制内存峰值）
@@ -1409,9 +1618,11 @@ def _ocr_batch_parallel_safe(
     if not scan_page_indices:
         return results
 
-    ocr_engine = _get_ocr_engine()
-    if ocr_engine is None:
-        logger.warning("PaddleOCR not available — skipping batch OCR")
+    # v7: 检查 PaddleOCR 是否可用
+    try:
+        from paddleocr import PaddleOCR
+    except ImportError:
+        logger.warning("PaddleOCR not installed — skipping batch OCR")
         return results
 
     zoom = dpi / 72
@@ -1431,88 +1642,110 @@ def _ocr_batch_parallel_safe(
         logger.info("All scan pages already have OCR cache — skipping")
         return results
 
-    # ── 分批处理：每批 batch_size 页 ──────────────────────────────────
-    total_batches = (len(pending_indices) + batch_size - 1) // batch_size
+    # v7: 使用 ProcessPoolExecutor + initializer 预加载 PaddleOCR
+    # 每个 worker 进程启动时调用 _ocr_worker_init 加载模型（仅一次）
+    # 后续所有任务复用该实例，无重复加载
+    # v7.1 C-V7-02: _calc_ocr_workers 内部 acquire 信号量，在 finally 中 release
+    actual_workers = _calc_ocr_workers(requested=max_workers)
+    pool = ProcessPoolExecutor(
+        max_workers=actual_workers,
+        initializer=_ocr_worker_init,
+    )
+    
+    try:
+        # ── 分批处理：每批 batch_size 页 ──────────────────────────
+        total_batches = (len(pending_indices) + batch_size - 1) // batch_size
 
-    def _ocr_pre_rendered(page_idx: int, img_array: "np.ndarray") -> tuple[int, str]:
-        """对预渲染的 numpy 数组执行 OCR（线程安全）."""
-        page_num = page_idx + 1
-        try:
-            result = _ocr_with_timeout(ocr_engine, img_array, timeout_sec)
-            if result is None:
-                return (page_idx, "")
+        for batch_idx in range(total_batches):
+            batch_start = batch_idx * batch_size
+            batch_end = min(batch_start + batch_size, len(pending_indices))
+            batch_indices = pending_indices[batch_start:batch_end]
 
-            text_lines = []
-            for line in result:
-                if line and len(line) >= 2:
-                    text_lines.append(line[1][0])  # PaddleOCR: [bbox, (text, confidence)]
+            logger.info(
+                f"Batch {batch_idx + 1}/{total_batches}: "
+                f"渲染 {len(batch_indices)} 页 (indices {batch_indices[0]}-{batch_indices[-1]})"
+            )
 
-            ocr_text = "\n".join(text_lines)
-
-            # 写入 OCR 缓存
-            ocr_cache_file = parsed_dir / "pages" / f"ocr_{page_num:04d}.txt"
-            ocr_cache_file.write_text(ocr_text, encoding="utf-8")
-
-            return (page_idx, ocr_text)
-        except Exception as e:
-            logger.warning(f"OCR failed for page {page_num}: {e}")
-            return (page_idx, "")
-
-    for batch_idx in range(total_batches):
-        batch_start = batch_idx * batch_size
-        batch_end = min(batch_start + batch_size, len(pending_indices))
-        batch_indices = pending_indices[batch_start:batch_end]
-
-        logger.info(
-            f"Batch {batch_idx + 1}/{total_batches}: "
-            f"渲染 {len(batch_indices)} 页 (indices {batch_indices[0]}-{batch_indices[-1]})"
-        )
-
-        # Phase A: 主线程预渲染本批次的扫描页
-        pre_rendered: list[tuple[int, "np.ndarray"]] = []
-        for page_idx in batch_indices:
-            page_num = page_idx + 1
-            try:
-                page = doc[page_idx]
-                pixmap = page.get_pixmap(matrix=mat)
-
-                import numpy as np
-                img_array = np.frombuffer(pixmap.samples, dtype=np.uint8)
-                img_array = img_array.reshape(pixmap.height, pixmap.width, pixmap.n)
-                if pixmap.n == 4:
-                    img_array = img_array[:, :, :3]  # RGBA → RGB
-
-                pixmap = None  # 释放 pixmap
-                pre_rendered.append((page_idx, img_array))
-            except Exception as e:
-                logger.warning(f"预渲染失败 page {page_num}: {e}")
-                results[page_idx] = ""
-
-        if not pre_rendered:
-            continue
-
-        # Phase B: 线程池并行 OCR（只操作 numpy 数组，不接触 fitz）
-        logger.info(
-            f"Batch {batch_idx + 1}: 并行 OCR {len(pre_rendered)} 页, {max_workers} workers"
-        )
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_ocr_pre_rendered, idx, img): idx
-                for idx, img in pre_rendered
-            }
-            for future in as_completed(futures):
+            # Phase A: 主线程预渲染本批次的扫描页
+            pre_rendered: list[tuple[int, bytes, tuple, str]] = []  # (idx, img_bytes, shape, dtype)
+            for page_idx in batch_indices:
+                page_num = page_idx + 1
                 try:
-                    page_idx, text = future.result()
-                    results[page_idx] = text
+                    page = doc[page_idx]
+                    pixmap = page.get_pixmap(matrix=mat)
+
+                    import numpy as np
+                    img_array = np.frombuffer(pixmap.samples, dtype=np.uint8)
+                    img_array = img_array.reshape(pixmap.height, pixmap.width, pixmap.n)
+                    if pixmap.n == 4:
+                        img_array = img_array[:, :, :3]  # RGBA → RGB
+
+                    pixmap = None  # 释放 pixmap
+                    # 序列化 img_array 供子进程使用
+                    pre_rendered.append((
+                        page_idx,
+                        img_array.tobytes(),
+                        img_array.shape,
+                        str(img_array.dtype),
+                    ))
                 except Exception as e:
-                    page_idx = futures[future]
-                    logger.warning(f"OCR thread failed for page {page_idx + 1}: {e}")
+                    logger.warning(f"预渲染失败 page {page_num}: {e}")
                     results[page_idx] = ""
 
-        # 释放本批次预渲染的 numpy 数组内存
-        pre_rendered.clear()
+            if not pre_rendered:
+                continue
 
+            # Phase B: 进程池并行 OCR（只操作 numpy 数组，不接触 fitz）
+            logger.info(
+                f"Batch {batch_idx + 1}: 并行 OCR {len(pre_rendered)} 页, {actual_workers} workers"
+            )
+
+            futures = {
+                pool.submit(
+                    _ocr_worker_task,
+                    idx, img_bytes, img_shape, img_dtype,
+                    str(parsed_dir), timeout_sec,
+                ): idx
+                for idx, img_bytes, img_shape, img_dtype in pre_rendered
+            }
+            
+            for future in as_completed(futures):
+                page_idx = futures[future]
+                try:
+                    # v7: 使用 future.result(timeout=timeout_sec) 实现单页超时
+                    result = future.result(timeout=timeout_sec)
+                    results[result[0]] = result[1]
+                except FutureTimeoutError:
+                    logger.warning(f"OCR timed out after {timeout_sec}s for page {page_idx + 1}")
+                    results[page_idx] = ""
+                except Exception as e:
+                    logger.warning(f"OCR process failed for page {page_idx + 1}: {e}")
+                    results[page_idx] = ""
+
+            # 释放本批次预渲染的数据
+            pre_rendered.clear()
+
+    finally:
+        # v7: 关闭进程池，回收 worker 进程
+        # v7.1 C-V7-03: shutdown(wait=False) 不会终止正在运行的 worker，
+        # 需要手动 terminate 卡死的进程
+        pool.shutdown(wait=False, cancel_futures=True)  # v7.1 m-V7-05: cancel_futures 需 Python 3.9+
+        
+        # v7.1 C-V7-03: 强制终止仍在运行的 worker 进程
+        # ProcessPoolExecutor 的 _processes 属性记录了所有 worker 进程
+        for pid, proc in getattr(pool, '_processes', {}).items():
+            if proc.is_alive():
+                logger.warning(f"Terminating stuck OCR worker PID={pid}")
+                proc.terminate()
+                proc.join(timeout=5)
+                if proc.is_alive():
+                    proc.kill()  # SIGKILL，最后手段
+                    logger.warning(f"Force-killed OCR worker PID={pid}")
+        
+        # v7.1 C-V7-02: 释放信号量槽位
+        for _ in range(actual_workers):
+            _ocr_semaphore.release()
+    
     success_count = sum(1 for v in results.values() if v)
     logger.info(
         f"OCR 完成: {success_count}/{len(scan_page_indices)} 页成功"
@@ -1521,48 +1754,100 @@ def _ocr_batch_parallel_safe(
     return results
 ```
 
-#### 3.6.3 性能重估（NC2/NC3 修复后：两阶段 OCR）
+#### 3.6.3 性能重估（v7: ProcessPool + initializer 后）
 
-**两阶段 OCR 时间模型**：
+**v7 性能改进**：v6 C-09 每页启动子进程加载模型 10-30s，750 页 = 4.5+ 小时。
+v7 ProcessPoolExecutor + initializer 仅在 worker 启动时加载模型（4 worker = 4 次加载 = ~2 分钟），
+后续 750 页 OCR 推理 ~1-3 秒/页（CPU 模式），总时间回到 ~25-40 分钟。
+
+**两阶段 OCR 时间模型**（v7 修正）：
+- Phase 0（进程池初始化）：4 worker × 10-30s 模型加载 = ~40-120s（仅一次）
 - Phase A（预渲染）：主线程单线程渲染，~0.3 秒/页
-- Phase B（并行 OCR）：4 线程并行，~1-3 秒/页（CPU 模式）
-- 总时间 = 流式解析时间 + Phase A 时间 + Phase B 时间
+- Phase B（并行 OCR）：4 进程并行，~1-3 秒/页（CPU 模式）
+- 总时间 = 流式解析时间 + Phase 0 + Phase A 时间 + Phase B 时间
 
-| 场景 | 文件大小 | 页数 | 扫描页数 | Phase A 预渲染 | Phase B 并行 OCR | 总预计时间 |
-|------|---------|------|---------|---------------|-----------------|-----------|
-| 纯文本 PDF | 200MB | ~1500 | 0 | 0s | 0s | 3-5 分钟 |
-| 少量扫描 | 200MB | ~1500 | 30 (2%) | ~9s | ~10-23s | 5-7 分钟 |
-| 中等扫描 | 200MB | ~1500 | 150 (10%) | ~45s | ~38-113s | 8-12 分钟 |
-| 大量扫描 | 200MB | ~1500 | 300 (20%) | ~90s | ~75-225s | 12-20 分钟 |
-| 极端扫描 | 200MB | ~1500 | 750 (50%) | ~225s | ~188-563s | 25-40 分钟 |
+| 场景 | 文件大小 | 页数 | 扫描页数 | Phase 0 初始化 | Phase A 预渲染 | Phase B 并行 OCR | 总预计时间 |
+|------|---------|------|---------|---------------|---------------|-----------------|-----------|
+| 纯文本 PDF | 200MB | ~1500 | 0 | 0s | 0s | 0s | 3-5 分钟 |
+| 少量扫描 | 200MB | ~1500 | 30 (2%) | ~60s | ~9s | ~10-23s | 6-8 分钟 |
+| 中等扫描 | 200MB | ~1500 | 150 (10%) | ~60s | ~45s | ~38-113s | 9-13 分钟 |
+| 大量扫描 | 200MB | ~1500 | 300 (20%) | ~60s | ~90s | ~75-225s | 12-20 分钟 |
+| 极端扫描 | 200MB | ~1500 | 750 (50%) | ~60s | ~225s | ~188-563s | 25-40 分钟 |
 
 **修正后的成功标准**：
 - 纯文本 PDF ≤ 10 分钟 ✅（与 v2 一致）
 - 含 10% 扫描页 PDF ≤ 15 分钟
 - 含 50% 扫描页 PDF ≤ 40 分钟（放宽到 30 分钟需 GPU 加速）
 
-> **注意**：两阶段 OCR 比串行 OCR（v3 理论值）略慢（因 Phase A 串行预渲染），
-> 但比 v3 的实际串行 `_ocr_page` 调用快 2-3 倍（因为 Phase B 真正并行）。
-> 更重要的是：NC2 修复消除了 segfault 风险，保证了程序稳定性。
+> **v6→v7 性能对比**：
+> - v6 C-09 方案：750 页 OCR = 750 × (10s 加载 + 2s 推理) = ~3 小时（不可接受）
+> - v7 ProcessPool 方案：750 页 OCR = 4 × 10s 加载 + 750/4 × 2s 推理 = ~6.5 分钟（可接受）
+> - 性能提升 **~27x**，回到 v5 预期水平
 
 #### 3.6.4 PaddleOCR 安装评估
 
 | 项目 | 说明 |
 |------|------|
 | 依赖 | `paddlepaddle`（~1.5GB CPU 版）+ `paddleocr`（~100MB） |
-| 安装命令 | `pip install paddlepaddle paddleocr` |
+| 安装命令 | `pip install paddlepaddle==2.6.1 paddleocr==2.7.0.3` |
 | 冲突风险 | paddlepaddle 依赖 numpy/pyyaml，可能与现有环境冲突，建议用独立 venv 或 Docker |
 | GPU 加速 | 安装 `paddlepaddle-gpu` 可将 OCR 速度提升 5-10x，但需要 CUDA 环境 |
 | 首次启动 | PaddleOCR 首次运行会下载模型文件（~200MB），需联网 |
+
+**v7 遗留-01：PaddleOCR 依赖冲突解决方案 — Dockerfile**
+
+paddlepaddle 对 numpy 版本敏感（要求 <2.0），与项目其他依赖可能冲突。
+推荐使用 Docker 隔离 PaddleOCR 环境：
+
+```dockerfile
+# docker/Dockerfile.ocr
+# v7 遗留-01: PaddleOCR 独立运行环境
+FROM python:3.10-slim
+
+# 安装系统依赖（PaddleOCR 需要 libgomp, libgl）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 libgl1-mesa-glx libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装版本锁定的 PaddleOCR
+RUN pip install --no-cache-dir \
+    paddlepaddle==2.6.1 \
+    paddleocr==2.7.0.3 \
+    numpy==1.24.3 \
+    PyYAML==6.0.1
+
+# 预下载模型（避免首次运行下载）
+# 提供 scripts/download_ocr_models.py 脚本
+COPY scripts/download_ocr_models.py /tmp/
+RUN python /tmp/download_ocr_models.py && rm /tmp/download_ocr_models.py
+
+# OCR worker 入口点
+WORKDIR /app
+COPY bid-agent/ /app/bid-agent/
+
+# 暴露 OCR RPC 端口（可选：如果 OCR 作为独立微服务）
+# EXPOSE 50051
+```
+
+**部署方案选择**：
+
+| 方案 | 适用场景 | 优点 | 缺点 |
+|------|---------|------|------|
+| **方案 A: 同进程** | 开发/测试 | 无序列化开销，代码简单 | 依赖冲突风险 |
+| **方案 B: Docker 隔离** | 生产 | 无依赖冲突，可独立升级 | 需 Docker 环境 |
+| **方案 C: 微服务** | 高并发 | 可独立扩缩容，资源隔离 | 序列化开销，网络延迟 |
+
+> v7 推荐：开发期用方案 A（venv 隔离），生产用方案 B（Docker）。
+> 方案 C（gRPC 微服务）作为未来扩展，当前 YAGNI。
 
 #### 3.6.5 OCR 策略决策表
 
 | 扫描页比例 | OCR 策略 | 并行度 |
 |------------|---------|--------|
 | < 5% | 跳过 + 标注（少量扫描页影响不大） | — |
-| 5%-15% | 自动启用 OCR + 标注 | 4 线程 |
-| 15%-30% | 自动启用 OCR + 提示用户预计时间 | 4 线程 |
-| > 30% | 强制 OCR + 警告用户可能耗时较长 | 4 线程 + 提示 GPU 加速 |
+| 5%-15% | 自动启用 OCR + 标注 | 4 进程 |
+| 15%-30% | 自动启用 OCR + 提示用户预计时间 | 4 进程 |
+| > 30% | 强制 OCR + 警告用户可能耗时较长 | 4 进程 + 提示 GPU 加速 |
 
 ### 3.7 向后兼容策略
 
@@ -1572,6 +1857,47 @@ def _ocr_batch_parallel_safe(
 - 文件大小 > 50MB → streaming 模式（新逻辑）
 
 下游节点通过 `doc.get("parse_mode")` 判断走哪条路径。
+
+#### C-06 修复：_serialize_state 跳过全文深拷贝
+
+**问题**：`graph.py:588` 的 `_serialize_state` 使用 `copy.deepcopy(snapshot)` 无条件深拷贝整个 AgentState。大文件模式下即使 `parsed_content=""`，若 `tables` 或 `meta` 仍大，deepcopy 仍有开销甚至 OOM。
+
+**修复**：检测 streaming 模式时，跳过大字段的 deepcopy：
+
+```python
+import copy
+
+def _serialize_state(state: dict) -> dict:
+    """序列化 AgentState 用于快照/导出.
+    
+    C-06 修复（v6）：大文件模式（streaming）跳过 parsed_content/raw_text/chunks
+    的深拷贝，避免 OOM。tables 字段也跳过（已在 tables.json 中持久化）。
+    """
+    snapshot = {}
+    for key, value in state.items():
+        if key == "documents":
+            # 对 documents 列表做特殊处理
+            docs_copy = []
+            for doc in value:
+                parse_mode = doc.get("parse_mode", "inline")
+                if parse_mode == "streaming":
+                    # C-06: streaming 模式跳过大字段深拷贝
+                    doc_copy = dict(doc)  # v7.1 m-V7-08: 仅 streaming 时浅拷贝
+                    doc_copy["parsed_content"] = ""  # 已经是空，确保
+                    doc_copy["raw_text"] = ""
+                    doc_copy["chunks"] = []
+                    # tables 不深拷贝，只保留引用（已在 tables.json 中）
+                    doc_copy["tables"] = doc.get("tables", [])  # 浅引用
+                else:
+                    # inline 模式正常深拷贝
+                    doc_copy = copy.deepcopy(doc)
+                docs_copy.append(doc_copy)
+            snapshot[key] = docs_copy
+        else:
+            # 非 documents 字段正常深拷贝
+            snapshot[key] = copy.deepcopy(value)
+    return snapshot
+```
 
 ### 3.8 清理策略
 
@@ -1585,6 +1911,113 @@ def reset_pipeline_state():
         parsed_dir = doc.get("parsed_dir", "")
         if parsed_dir and Path(parsed_dir).exists():
             shutil.rmtree(parsed_dir, ignore_errors=True)
+    
+    # v7: 清理 OCR 进程池（如有残留）
+    # v6 的 _ocr_engine_pool 已废弃，v7 使用 ProcessPoolExecutor
+    # ProcessPoolExecutor 在 _ocr_batch_parallel_safe 的 finally 中已 shutdown
+    
+    # v7 遗留-05: 定时清理过期解析目录
+    _cleanup_expired_parsed_dirs()
+```
+
+```python
+# v7 遗留-05: TTL 定时清理
+import time
+
+_PARSED_TTL_HOURS = 72  # 解析目录过期时间
+_CLEANUP_INTERVAL_HOURS = 6  # 清理间隔
+_last_cleanup_time = 0.0
+
+def _cleanup_expired_parsed_dirs():
+    """清理超过 TTL 的解析目录（v7 遗留-05 + v7.1 M-V7-13 合并统一）.
+    
+    v7.1 M-V7-13: 合并 §3.5 的 _cleanup_old_parsed_dirs 和此函数。
+    时间判断策略：
+    - 优先使用 meta.json 的 parsed_at（记录实际解析时间，最准确）
+    - meta.json 不存在时回退到目录 st_mtime（兑底）
+    
+    触发时机：
+    1. 每次上传前调用
+    2. 每 6 小时自动触发
+    3. reset_pipeline_state 时触发
+    4. 启动时调用（原 §3.5 的 _cleanup_old_parsed_dirs 调用点）
+    """
+    global _last_cleanup_time
+    now = time.time()
+    
+    # 限制清理频率：距上次清理不足 6 小时则跳过
+    if now - _last_cleanup_time < _CLEANUP_INTERVAL_HOURS * 3600:
+        return
+    
+    parsed_root = Path("data/parsed")
+    if not parsed_root.exists():
+        return
+    
+    cutoff = now - _PARSED_TTL_HOURS * 3600
+    cleaned = 0
+    for doc_dir in parsed_root.iterdir():
+        if not doc_dir.is_dir():
+            continue
+        
+        # v7.1 M-V7-13: 优先使用 meta.json 的 parsed_at
+        meta_path = doc_dir / "meta.json"
+        dir_time = None
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+                parsed_at = meta.get("parsed_at", "")
+                if parsed_at:
+                    dir_time = datetime.fromisoformat(parsed_at).timestamp()
+            except Exception:
+                pass  # meta.json 损坏，回退到 st_mtime
+        
+        # 兑底：使用目录修改时间
+        if dir_time is None:
+            dir_time = doc_dir.stat().st_mtime
+        
+        if dir_time < cutoff:
+            shutil.rmtree(doc_dir, ignore_errors=True)
+            cleaned += 1
+    
+    _last_cleanup_time = now
+    if cleaned > 0:
+        logger.info(f"TTL cleanup: removed {cleaned} expired parsed directories")
+```
+
+#### C-04 修复：AgentState TypedDict 扩展
+
+**问题**：`state.py` 的 `AgentState` TypedDict 未声明 `parse_mode`/`parsed_dir`/`meta`/`chapter_index` 字段，`factory_state` 也未初始化默认值，LangGraph 会静默丢弃未声明字段。
+
+**修复**：扩展 TypedDict + factory_state 默认值：
+
+```python
+# state.py 修改
+
+class AgentState(TypedDict):
+    # ... 现有字段 ...
+    documents: list[dict]
+    requirements: dict
+    sections: dict[str, str]  # 生成内容（原字段保留）
+    
+    # C-04 修复（v6）：新增大文件模式字段
+    parse_mode: str  # "inline" | "streaming"
+    parsed_dir: str  # 解析结果目录路径
+    meta: dict       # 文档元信息
+    chapter_index: list[dict]  # C-02: 章节索引（非 sections）
+
+# factory_state 修改
+def create_factory_state() -> AgentState:
+    return {
+        # ... 现有字段 ...
+        "documents": [],
+        "requirements": {},
+        "sections": {},
+        # C-04: 新增字段默认值
+        "parse_mode": "inline",     # 默认 inline 模式
+        "parsed_dir": "",           # 默认空
+        "meta": {},                 # 默认空
+        "chapter_index": [],        # C-02: 默认空列表
+    }
 ```
 
 ### 3.9 辅助函数定义（Major 修复：补充缺失函数）
@@ -1600,17 +2033,32 @@ def _create_parsed_dir(file_record: dict) -> Path:
     目录格式：data/parsed/{document_id}/
     document_id = doc_{md5_hash}
     
-    M2 修复：统一 document_id 生成策略 — 使用 md5(filename + file_path) 取前 8 位。
+    M2 修复：统一 document_id 生成策略。
+    C-01 修复（v6）：原方案使用 md5(filename + file_path)，但 file_path 是
+    tempfile.NamedTemporaryFile 的路径（/tmp/tmpXXXX.pdf），每次上传都不同，
+    导致同一文件重复上传生成不同 document_id，断点续传和目录复用完全失效。
+    
+    修复方案：改用 md5(filename + file_size + 前1MB内容hash)，不依赖临时路径。
+    - filename：文件名（用户可识别）
+    - file_size：文件大小（快速区分不同文件）
+    - 前1MB内容hash：防止同名同大小但内容不同的情况
+    
     同一文件重复上传会生成相同的 document_id，复用解析目录，支持断点续传。
-    不再使用 uuid（每次不同）或 Path.stem（路径不同但同名文件会冲突）。
     """
     import hashlib
     
     filename = file_record.get("filename", "unknown")
     file_path = file_record.get("path", "")
+    file_size = Path(file_path).stat().st_size if Path(file_path).exists() else 0
     
-    # M2: md5(filename + file_path) 作为 document_id
-    raw = f"{filename}_{file_path}"
+    # C-01: 读取前 1MB 内容做 hash（避免依赖临时路径）
+    content_hash = ""
+    if Path(file_path).exists():
+        with open(file_path, "rb") as f:
+            content_hash = hashlib.md5(f.read(1024 * 1024)).hexdigest()[:8]
+    
+    # C-01: md5(filename + file_size + content_hash) 作为 document_id
+    raw = f"{filename}_{file_size}_{content_hash}"
     doc_hash = hashlib.md5(raw.encode()).hexdigest()[:8]
     document_id = f"doc_{doc_hash}"
     
@@ -1618,16 +2066,25 @@ def _create_parsed_dir(file_record: dict) -> Path:
     parsed_dir.mkdir(parents=True, exist_ok=True)
     
     (parsed_dir / "pages").mkdir(exist_ok=True)
-    (parsed_dir / "sections").mkdir(exist_ok=True)
+    (parsed_dir / "chapters").mkdir(exist_ok=True)  # C-02: 重命名 sections→chapters
     
     return parsed_dir
 
 
 def _gen_document_id(file_path: str) -> str:
-    """M2: 统一 document_id 生成逻辑，供 _build_meta 使用."""
+    """M2: 统一 document_id 生成逻辑，供 _build_meta 使用.
+    
+    C-01 修复（v6）：与 _create_parsed_dir 保持一致的 hash 策略。
+    """
     import hashlib
     filename = Path(file_path).name
-    raw = f"{filename}_{file_path}"
+    file_size = Path(file_path).stat().st_size
+    
+    content_hash = ""
+    with open(file_path, "rb") as f:
+        content_hash = hashlib.md5(f.read(1024 * 1024)).hexdigest()[:8]
+    
+    raw = f"{filename}_{file_size}_{content_hash}"
     doc_hash = hashlib.md5(raw.encode()).hexdigest()[:8]
     return f"doc_{doc_hash}"
 ```
@@ -1704,8 +2161,14 @@ def _clean_table(rows: list[list]) -> list[list[str]]:
 
 #### 3.9.4 _classify_table
 
+> **v7 遗留-03 修复**：此函数在 spec 中定义是为了展示设计意图。
+> 实际实现应直接复用 `bid-agent/core/nodes/doc_parser.py` 中的 `_classify_table`，
+> 该实现已包含完整的关键词集合和分类逻辑。以下代码仅作为参考，
+> 实现时应 `from core.nodes.doc_parser import _classify_table`。
+
 ```python
 # 关键词集合（与 doc_parser.py 现有定义对齐）
+# v7 遗留-03: 实际使用 doc_parser.py 中的定义，此处仅展示设计参考
 _SCORING_KEYWORDS = {"评分", "分值", "得分", "满分", "评分项", "评分标准", "评议"}
 _QUALIFICATION_KEYWORDS = {"资质", "资格", "证书", "许可", "认证", "等级"}
 
@@ -1726,15 +2189,28 @@ def _classify_table(header: list[str]) -> str:
 
 #### 3.9.5 _extract_company_names
 
+> **v7 遗留-02 修复**：此函数在 spec 中的定义是简化版。
+> 实际实现应直接复用 `bid-agent/core/nodes/quality_checker.py` 中的 `_extract_company_names`，
+> 该实现比 spec 版本更健壮，包含：
+> - 前缀剥离（去除「投标人/供应商/承包商」等前缀）
+> - 句子片段过滤（避免跨标点符号的误匹配）
+> - 投标人模式匹配（从「投标人：XXX」格式提取）
+>
+> 实现时应 `from core.nodes.quality_checker import _extract_company_names`，
+> 以下代码仅作为设计参考。
+
 ```python
 import re
 
+# v7 遗留-02: 以下为简化版，实际使用 quality_checker.py 中的完整版
 # 公司名称正则模式
 _COMPANY_PATTERNS = [
     # XXX有限公司 / XXX有限责任公司
     re.compile(r'([\u4e00-\u9fa5A-Za-z（）()]{2,30}(?:有限公司|有限责任公司|股份有限公司|股份公司))'),
     # XXX集团
     re.compile(r'([\u4e00-\u9fa5A-Za-z]{2,20}集团(?:有限公司|有限责任公司)?)'),
+    # P2 新增：合伙企业 / 事务所 / 研究院 / 设计院 / 大学 / 分院
+    re.compile(r'([\u4e00-\u9fa5A-Za-z]{2,20}(?:合伙企业|事务所|研究院|设计院|大学|分院|分公司|子公司))'),
 ]
 
 
@@ -1758,7 +2234,7 @@ def _extract_company_names(text: str) -> set[str]:
 **问题**：v3 完全未考虑多用户同时上传大文件的场景。如果 3 个用户同时上传 200MB 文件：
 - 内存：3 × 流式解析 = 3 × ~50MB = ~150MB（可控）
 - 磁盘 I/O：3 × 2000 页写盘 = 6000 次文件写入（I/O 争抢）
-- OCR：3 × 4 线程 = 12 个 OCR 线程（CPU 过载）
+- OCR：3 × 4 进程 = 12 个 OCR 进程（CPU 过载）
 - 磁盘空间：3 × 600MB 解析结果 = ~1.8GB（需预检）
 
 **方案：信号量限流 + 队列排队**
@@ -1768,7 +2244,7 @@ import threading
 
 # 全局并发限制
 _MAX_CONCURRENT_PARSE = 2     # 最多同时解析 2 个大文件
-_MAX_CONCURRENT_OCR = 8       # 最多 8 个 OCR 线程（跨所有用户共享）
+_MAX_CONCURRENT_OCR = 8       # 最多 8 个 OCR 进程（跨所有用户共享）
 
 _parse_semaphore = threading.Semaphore(_MAX_CONCURRENT_PARSE)
 _ocr_semaphore = threading.Semaphore(_MAX_CONCURRENT_OCR)
@@ -1778,11 +2254,13 @@ def _stream_parse_pdf_with_limit(
     file_path: str,
     parsed_dir: Path,
     progress_callback: Callable[[int, int], None] | None = None,
-) -> tuple[IncrementalIndexBuilder, list[dict], list[dict]]:
+) -> tuple[IncrementalIndexBuilder, list[dict], list[dict], int, dict]:
     """带并发限制的流式解析.
     
     超过 _MAX_CONCURRENT_PARSE 的请求会阻塞等待，
     前端通过 progress_callback 显示排队状态。
+    
+    C-11: 返回值适配 5 元组（含元信息 dict）。
     """
     # 尝试获取信号量（非阻塞）
     acquired = _parse_semaphore.acquire(blocking=False)
@@ -1790,10 +2268,13 @@ def _stream_parse_pdf_with_limit(
         logger.info("大文件解析队列已满，等待中...")
         if progress_callback:
             progress_callback(-1, -1)  # 特殊值：通知前端显示"排队中"
-        _parse_semaphore.acquire()  # 阻塞等待
+        # P2: 增加超时避免无限阻塞
+        acquired = _parse_semaphore.acquire(timeout=300)
+        if not acquired:
+            raise TimeoutError("大文件解析队列等待超时（300s），请稍后重试")
     
     try:
-        return _stream_parse_pdf(file_path, parsed_dir, progress_callback)  # returns (index_builder, tables, chapter_index, total_chars)
+        return _stream_parse_pdf(file_path, parsed_dir, progress_callback)  # returns 5-tuple
     finally:
         _parse_semaphore.release()
 ```
@@ -1802,15 +2283,19 @@ def _stream_parse_pdf_with_limit(
 
 ```python
 def _calc_ocr_workers(requested: int = 4) -> int:
-    """动态计算可用 OCR 线程数，避免跨用户 CPU 过载."""
-    available = _MAX_CONCURRENT_OCR - sum(
-        1 for _ in range(_MAX_CONCURRENT_OCR)
-        if not _ocr_semaphore.acquire(blocking=False)
-    )
-    # 释放刚才试探性获取的信号量
-    for _ in range(_MAX_CONCURRENT_OCR - available):
-        _ocr_semaphore.release()
-    return min(requested, max(1, available))
+    """获取 OCR 进程槽位，避免跨用户 CPU 过载.
+    
+    v7.2 C-V7.1-01 + M-V7.1-01 修复：
+    - 消除信号量双重获取（调用方不再调用此函数）
+    - 消除 TOCTOU 竞态：直接 acquire requested 个槽位，不预读 _value
+    - acquire 是原子操作且线程安全的，多线程同时调用时自动排队
+    - 返回值始终等于 requested（信号量不足时阻塞等待）
+    
+    信号量在 _ocr_batch_parallel_safe 的 finally 中 release。
+    """
+    for _ in range(requested):
+        _ocr_semaphore.acquire()
+    return requested
 ```
 
 **并发限制参数表**：
@@ -1818,9 +2303,9 @@ def _calc_ocr_workers(requested: int = 4) -> int:
 | 资源 | 限制值 | 策略 |
 |------|--------|------|
 | 同时解析大文件 | 2 | 信号量排队，超限请求等待 |
-| 全局 OCR 线程 | 8 | 跨用户共享，动态分配 |
-| 单用户磁盘空间 | 2GB | 预检，不足时拒绝并提示 |
-| TTL 清理频率 | 每次上传前 | 自动清理 >72h 的解析目录 |
+| 全局 OCR 进程 | 8 | 跨用户共享，动态分配（v7.1 C-V7-02: _calc_ocr_workers 内 acquire 信号量） |
+| 单用户磁盘空间 | 3GB | 预检，不足时拒绝并提示（P2: 原2GB偏紧，200MB PDF解析后pages.blob+索引+OCR缓存约600MB-1GB，2用户+断点续传残留可能不足） |
+| TTL 清理频率 | 每次上传前 + 每 6 小时 | 自动清理 >72h 的解析目录（v7 遗留-05: 增加定时清理） |
 
 ---
 
@@ -1847,7 +2332,12 @@ def _calc_ocr_workers(requested: int = 4) -> int:
 
 ```python
 def _build_known_companies(state: AgentState) -> set[str]:
-    """从招标文件提取公司名，构建白名单."""
+    """从招标文件提取公司名，构建白名单.
+    
+    P2 优化（v6）：原方案仅从前20页提取公司名，但工程类标书中分包商、
+    技术合作方、材料供应商公司名常出现在技术规格书（中后段）和附录。
+    改用倒排索引搜索公司名后缀关键词定位页面，再提取公司名。
+    """
     known: set[str] = set()
     documents = state.get("documents", [])
     for doc in documents:
@@ -1857,8 +2347,14 @@ def _build_known_companies(state: AgentState) -> set[str]:
                 known.update(_extract_company_names(parsed))
         elif doc.get("parse_mode") == "streaming" and doc.get("parsed_dir"):
             reader = ParsedDocumentReader(doc["parsed_dir"])
-            # 公司名通常在前 20 页
-            for i in range(1, min(21, reader.meta["page_count"] + 1)):
+            # P2: 改用倒排索引搜索公司名后缀关键词
+            company_suffixes = ["有限公司", "有限责任公司", "股份有限公司", "集团", "合伙企业", "事务所"]
+            # 搜索包含公司名后缀的页面（top 50 页，覆盖全文）
+            company_pages = reader.search_pages(company_suffixes, top_k=50)
+            for page in company_pages:
+                known.update(_extract_company_names(page.text))
+            # 兜底：前 20 页也扫描一遍（防止倒排索引遗漏）
+            for i in range(1, min(21, reader.meta.get("page_count", 0) + 1)):
                 known.update(_extract_company_names(reader.get_page(i)))
     return known
 ```
@@ -1893,7 +2389,7 @@ def _build_known_companies(state: AgentState) -> set[str]:
                                其他节点通过 requirements 间接依赖
 ```
 
-内存峰值：~1 页文本 + 1 个表格 JSON + LRU 缓存（50 页）≈ 5-50MB
+内存峰值：~1 页文本 + 1 个表格 JSON + LRU 缓存（200 页）≈ 5-200MB
 
 ### 5.3 内存对比
 
@@ -1959,18 +2455,20 @@ if free_space < estimated_size:
 
 | 阶段 | 内容 | 优先级 | 预计工作量 |
 |------|------|--------|----------|
+| **Phase 0（v6新增）** | 修复 13 个 Critical 问题（C-01~C-13）+ AgentState TypedDict 扩展 + factory_state 默认值 | P0 | 3-4 天 |
 | Phase 1 | 流式解析核心 + 磁盘持久化 + Reader 接口 + C1-C5 修复 | P0 | 4-6 天 |
 | Phase 2 | ReqExtractor 适配 + 倒排索引 bigram + search_pages + M8 修复 + NC1 预算分配 | P0 | 2-3 天 |
-| Phase 3 | QualityChecker 适配 + Reader 公司名提取 | P1 | 1 天 |
-| Phase 4 | OCR 完整实现（M1）+ NC2 预渲染并行 OCR + NC3 两阶段集成 | P1 | 5-7 天 |
+| Phase 3 | QualityChecker 适配 + Reader 公司名提取（P2: 改用倒排索引替代前20页） | P1 | 1-1.5 天 |
+| Phase 4 | OCR 完整实现（M1）+ NC2 预渲染并行 OCR + NC3 两阶段集成 + v7 ProcessPoolExecutor + initializer 预加载 | P1 | 7-9 天（P2: 原估5-7天偏乐观，PaddleOCR环境调试+进程池+子进程超时需额外2-3天） |
 | Phase 5 | 两阶段管道跨阶段持久化 + C5 修复 | P1 | 1-2 天 |
-| Phase 6 | 进度反馈（M5）+ 断点续传（M6）+ 边界情况 | P2 | 2-3 天 |
-| Phase 7 | 快照序列化优化 + 清理策略 + TTL 72h | P2 | 1 天 |
-| Phase 8 | 章节自动切分（M2）+ Reader 生命周期（M4）+ 辅助函数 | P2 | 2 天 |
+| Phase 6 | 进度反馈（M5）+ 断点续传（M6）+ C-12 原子写入 + 边界情况 | P2 | 2-3 天 |
+| Phase 7 | 快照序列化优化（C-06）+ 清理策略 + TTL 72h | P2 | 1.5 天 |
+| Phase 8 | 章节自动切分（M2/C-10）+ Reader 生命周期（M4）+ 辅助函数 | P2 | 2 天 |
 | Phase 9 | 召回率验证（M9）+ 测试策略实现（M10）| P2 | 2-3 天 |
-| Phase 10 | 磁盘 I/O 优化 pages.blob + 多用户并发控制 + 倒排索引内存验证 | P3 | 2 天 |
+| Phase 10 | 磁盘 I/O 优化 pages.blob（C-07）+ 多用户并发控制 + 倒排索引内存验证 | P3 | 2.5 天 |
+| **Phase 11（v6新增）** | 端到端联调 + 性能调优 + 14 节点 streaming 模式协同验证 | — | 3-5 天 |
 
-**总计**：~22-30 天
+**总计**：~33-42 天（v6 修订：含 Phase 0 修复 3-4 天 + Phase 11 联调 3-5 天 + Phase 4 增加工程细节 2 天）
 
 ---
 
@@ -1981,7 +2479,7 @@ if free_space < estimated_size:
 | `doc_parser.py` — `_load_pdf` | 新增 | `_stream_parse_pdf` 流式版本（含增量索引、断点续传、章节检测、两阶段 OCR） |
 | `doc_parser.py` — `_parse_single_doc` | 修改 | 根据文件大小选择 inline/streaming；M7: streaming 模式 raw_text="" |
 | `doc_parser.py` — `document_parser` | 修改 | 大文件模式返回引用而非全文；M5: 进度回调 |
-| `state.py` — `AgentState` | 新增字段 | `parse_mode`, `parsed_dir`, `meta`, `sections` |
+| `state.py` — `AgentState` | 新增字段 | `parse_mode`, `parsed_dir`, `meta`, `chapter_index`（C-02: 重命名 sections→chapter_index） |
 | `req_extractor.py` | 修改 | 倒排索引 bigram 替代全文拼接；M8: bid_subtype 用前 10 页识别；NC1: 预算分配策略 |
 | `quality_checker.py` | 修改 | Reader 提取公司名白名单 |
 | `graph.py` — `_serialize_state` | 修改 | 大文件模式跳过全文深拷贝 |
@@ -1990,7 +2488,7 @@ if free_space < estimated_size:
 | `app.py` | 修改 | 启动时调用 TTL 清理（72h） |
 | `.streamlit/config.toml` | 新增 | `maxUploadSize = 1024` |
 | **新增** `parsed_doc_reader.py` | 新文件 | `ParsedDocumentReader` 类 + `get_reader()` 全局缓存 + `_tokenize_chinese()` bigram + `SearchResult` dataclass + `PageBlobReader` 合并文件读取 |
-| **新增** `ocr_engine.py` | 新文件 | `_ocr_page()` + `_ocr_batch_parallel_safe()` 预渲染并行 OCR + PaddleOCR 单例 |
+| **新增** `ocr_engine.py` | 新文件 | `_ocr_batch_parallel_safe()` + `_ocr_worker_init()` + `_ocr_worker_task()` + ProcessPoolExecutor 预加载 |
 | **新增** `parse_helpers.py` | 新文件 | `_create_parsed_dir` / `_build_meta` / `_clean_table` / `_classify_table` / `_extract_company_names` |
 | **新增** `concurrency_control.py` | 新文件 | 信号量限流（`_parse_semaphore` / `_ocr_semaphore`）+ `_calc_ocr_workers()` |
 
@@ -2001,10 +2499,10 @@ if free_space < estimated_size:
 ### 9.1 功能验收
 
 1. 200MB PDF 能完整解析，不 OOM，不超时
-2. 关键信息提取完整率 ≥ 95%
+2. 关键信息提取完整率 ≥ 90%（P2: 原95%与bigram理论值90%不一致，统一为90%）
 3. GUI 模式下有实时进度条
 4. 小文件（≤50MB）行为完全不变
-5. 工程类文件扫描页 OCR 识别率 ≥ 95%
+5. 工程类文件扫描页 OCR 识别率 ≥ 85%（P2: CPU模式PaddleOCR处理工程图纸70-85%准确率，95%不现实）
 
 ### 9.2 性能验收
 
@@ -2012,7 +2510,7 @@ if free_space < estimated_size:
 |------|------|
 | 200MB 纯文本 PDF 解析内存峰值 | ≤ 4GB（含上传阶段） |
 | 200MB 纯文本 PDF 解析时间 | ≤ 10 分钟 |
-| 200MB 含 10% 扫描页 PDF 解析时间 | ≤ 15 分钟（4 线程 OCR） |
+| 200MB 含 10% 扫描页 PDF 解析时间 | ≤ 15 分钟（4 进程 OCR） |
 | OCR 预渲染内存峰值（NC4） | ≤ 580MB（50页/批 × 11.6MB/页） |
 | 单次检索延迟 | ≤ 100ms（LRU 命中） |
 | 快照序列化时间 | ≤ 5 秒（不含全文） |
@@ -2041,7 +2539,7 @@ if free_space < estimated_size:
 | 关键词搜索遗漏关键信息 | 低 | 高 | bigram 分词保证召回率 ≥90% + 前 10 页兑底 + 二次检索（M9） |
 | 倒排索引构建过慢 | 低 | 中 | 增量构建，逐页同步，无额外开销（C2 修复） |
 | OCR 准确率不足 | 中 | 高 | PaddleOCR（中文优化）+ 并行 OCR + OCR 缓存 |
-| OCR 耗时过长 | 中 | 高 | 并行 OCR（4 线程）+ 超时保护 + 性能分级目标 |
+| OCR 耗时过长 | 中 | 高 | 并行 OCR（4 进程）+ 超时保护 + 性能分级目标 |
 | LRU 缓存 bug | 已修复 | 低 | C3 已修复：cache hit 时 move_to_end |
 | 跨阶段持久化失败 | 低 | 高 | 非临时目录 + TTL 72h + session_state 传递 |
 | 向后兼容性破坏 | 低 | 高 | 双模式设计，小文件完全不变 |
@@ -2052,16 +2550,31 @@ if free_space < estimated_size:
 | 断点续传失败 | 低 | 中 | M6：progress.json 记录 + OCR 缓存避免重复 |
 | bid_subtype 识别错误 | 已修复 | 低 | M8：大文件模式用前 10 页而非 combined[:3000] |
 | **搜索结果被截断丢弃** | 已修复 | 高 | NC1 已修复：预算分配策略，每组分配固定字符预算 |
-| **fitz Document 多线程 segfault** | 已修复 | 高 | NC2 已修复：预渲染 + 多线程 OCR，fitz 只在主线程访问 |
+| **fitz Document 多线程 segfault** | 已修复 | 高 | NC2 已修复：预渲染 + 多进程 OCR，fitz 只在主线程访问 |
 | **并行 OCR 未集成（死代码）** | 已修复 | 高 | NC3 已修复：两阶段 OCR，流式解析后批量并行执行 |
 | **预渲染内存爆炸（750页×11.6MB=8.7GB）** | 已修复 | 高 | NC4 已修复：分批预渲染，每批≤50页，峰值≤580MB |
 | **索引 token 残留（占位文本污染）** | 已修复 | 中 | NC5 已修复：OCR 回写前 remove_page 清除旧 token |
 | **ParsedDocumentReader 初始化矛盾** | 已修复 | 中 | NC6 已修复：统一为懒加载版本，删除重复定义 |
 | **total_chars 估算严重不准** | 已修复 | 中 | M1 已修复：流式累加实际字符数，不用索引估算 |
-| **document_id 生成不统一** | 已修复 | 低 | M2 已修复：统一 md5(filename+path)，支持断点续传 |
+| **document_id 生成不统一** | 已修复 | 低 | M2 已修复→C-01 v6进一步修复：改用 md5(filename+file_size+内容hash)，不依赖临时路径 |
 | **suffix 作用域 bug** | 已修复 | 低 | M3 已修复：从文件名重新提取 |
 | **_calc_ocr_workers 未调用** | 已修复 | 中 | M4 已修复：集成到 _ocr_batch_parallel_safe 调用处 |
 | **PageBlobReader 未集成到 get_page** | 已修复 | 中 | M5 已修复：get_page 优先使用 blob，回退逐页文件 |
+| **C-01: document_id 依赖临时路径** | 已修复 | 高 | v6：改用 md5(filename+file_size+前1MB内容hash)，断点续传不再失效 |
+| **C-02: sections 字段类型冲突** | 已修复 | 高 | v6：重命名为 chapter_index，避免与 AgentState 顶层 sections:dict 冲突 |
+| **C-03: _calc_ocr_workers 竞态缺陷** | 已修复 | 高 | v6：per-task 信号量限流，acquire 后持有，finally release |
+| **C-04: AgentState TypedDict 未更新** | 已修复 | 高 | v6：扩展 TypedDict + factory_state 默认值 |
+| **C-05: bigram 英数处理 bug** | 已修复 | 高 | v6：统一 _tokenize_query 切片逻辑，英数整词查询与索引一致 |
+| **C-06: _serialize_state deepcopy 未改** | 已修复 | 高 | v6：检测 streaming 模式跳过全文深拷贝 |
+| **C-07: PageBlobReader 写入未集成** | 已修复 | 高 | v6：_stream_parse_pdf 统一使用 PageBlobReader.write_page |
+| **C-08: PaddleOCR 线程安全** | 已修复 | 高 | v6：线程级实例池 → v7：进程池（ProcessPoolExecutor + initializer） |
+| **C-09: _ocr_with_timeout 不可靠** | 已修复 | 高 | v6：multiprocessing.Process → v7：ProcessPoolExecutor（消除每页重新加载模型） |
+| **C-10: _detect_chapter_boundary 未定义** | 已修复 | 高 | v6：补全实现 + probe_info 参数 + TOC 优先 + 降级策略 |
+| **C-11: _build_meta 调用链断裂** | 已修复 | 高 | v6：_stream_parse_pdf 返回元信息 dict，透传给 _build_meta |
+| **C-12: 进度文件非原子写** | 已修复 | 中 | v6：tmp + os.replace 原子替换 + 每50页增量落盘索引 |
+| **C-13: remove_page O(N) 性能** | 已修复 | 中 | v6：反向索引 _page_to_tokens，O(K) 替代 O(N) |
+| **PaddleOCR API 版本漂移** | 已缓解 | 中 | v6：版本锁定 paddleocr==2.7.0.3 + paddlepaddle==2.6.1 |
+| **内网无法下载 OCR 模型** | 已缓解 | 中 | v6：提供 scripts/download_ocr_models.py 离线预置 |
 
 ---
 
@@ -2069,7 +2582,7 @@ if free_space < estimated_size:
 
 ### 11.1 问题
 
-存储结构中有 `sections/` 目录，AgentState 有 `sections` 字段，但 v2 完全没有描述如何从 2000 页 PDF 中自动检测章节边界。
+存储结构中有 `chapters/` 目录（C-02: 原 sections 重命名），AgentState 有 `chapter_index` 字段，但 v2 完全没有描述如何从 2000 页 PDF 中自动检测章节边界。
 
 ### 11.2 方案：TOC 优先 + 正则回退
 
@@ -2091,18 +2604,38 @@ _CHAPTER_PATTERNS = [
 ]
 
 
-def _detect_chapter_boundary(page_text: str, page_num: int) -> dict | None:
+def _detect_chapter_boundary(page_text: str, page_num: int, probe_info: dict | None = None) -> dict | None:
     """检测页面是否包含章节边界.
     
     M2 设计：
-    1. 优先使用 PDF 书签（TOC）— 在 _probe_pdf 阶段已获取
+    1. 优先使用 PDF 书签（TOC）— 在 _probe_pdf 阶段已获取（C-10: 通过 probe_info 传入）
     2. 无书签时，使用正则匹配章节标题
     3. 返回章节信息 dict 或 None
+    
+    C-10 修复（v6）：原方案在 _stream_parse_pdf 中调用但未定义，现补全实现。
+    增加 probe_info 参数支持 TOC 优先策略。
+    
+    降级策略：无书签且正则无匹配时，不切分章节，chapter_index=[]，不影响主流程。
     
     Returns:
         {"name": "第一章 投标须知", "key": "ch01", "page_range": [page_num, None]}
         或 None（本页不是章节起始页）
     """
+    # C-10: 优先使用 TOC（书签）
+    if probe_info:
+        toc = probe_info.get("toc", [])
+        for entry in toc:
+            # fitz TOC 格式: [level, title, page_num]
+            if len(entry) >= 3 and entry[2] == page_num and entry[0] == 1:
+                name = entry[1].strip()
+                key = f"ch{page_num:04d}"
+                return {
+                    "name": name,
+                    "key": key,
+                    "page_range": [page_num, None],
+                }
+    
+    # C-10: 无 TOC 或 TOC 未命中，使用正则匹配
     # 只检查页面前 500 字符（章节标题通常在页面开头）
     head = page_text[:500]
     
@@ -2118,16 +2651,17 @@ def _detect_chapter_boundary(page_text: str, page_num: int) -> dict | None:
                 "page_range": [page_num, None],  # 结束页在下一章节检测时更新
             }
     
+    # C-10: 降级 — 不切分章节，返回 None
     return None
 
 
 def _save_chapter(parsed_dir: Path, chapter: dict, text_parts: list[str]) -> None:
     """将章节文本合并写入文件."""
-    sections_dir = parsed_dir / "sections"
-    sections_dir.mkdir(exist_ok=True)
+    chapters_dir = parsed_dir / "chapters"  # C-02: sections→chapters; v7.1 m-V7-02: 变量名同步
+    chapters_dir.mkdir(exist_ok=True)
     
     combined = "\n\n".join(text_parts)
-    (sections_dir / f"{chapter['key']}.txt").write_text(combined, encoding="utf-8")
+    (chapters_dir / f"{chapter['key']}.txt").write_text(combined, encoding="utf-8")
 
 
 def _build_chapter_index_from_toc(toc: list) -> list[dict]:
@@ -2172,7 +2706,7 @@ def _build_chapter_index_from_toc(toc: list) -> list[dict]:
 |------|------|
 | PDF 有书签（`has_bookmarks=True`） | 使用 `_build_chapter_index_from_toc(toc)` |
 | PDF 无书签 | 流式解析时逐页调用 `_detect_chapter_boundary()` |
-| 无书签且正则无匹配 | 不切分章节，`sections/` 目录为空，AgentState 中 `sections=[]` |
+| 无书签且正则无匹配 | 不切分章节，`chapters/` 目录为空，AgentState 中 `chapter_index=[]` |
 
 ---
 
@@ -2266,13 +2800,19 @@ def document_parser(state: AgentState) -> dict:
             status_text = st.empty()
             
             def progress_callback(page_num: int, total_pages: int):
+                # v7 NC-05 修复：检查特殊值 -1,-1（排队等待）
+                if page_num == -1 and total_pages == -1:
+                    progress_bar.progress(0.0, text="排队等待中...前方有其他文件正在解析")
+                    return
+                
                 ratio = page_num / total_pages
                 progress_bar.progress(ratio, text=f"解析中... 第 {page_num}/{total_pages} 页")
                 if page_num % 100 == 0:
                     status_text.text(f"已完成 {page_num}/{total_pages} 页 ({ratio:.0%})")
             
             # 执行流式解析（带进度回调）
-            index_builder, tables, chapter_index, total_chars = _stream_parse_pdf(
+            # v7 NC-04 修复：_stream_parse_pdf 返回 5 元组（含 meta dict）
+            index_builder, tables, chapter_index, total_chars, meta = _stream_parse_pdf(
                 file_path=doc["path"],
                 parsed_dir=parsed_dir,
                 progress_callback=progress_callback,
@@ -2286,7 +2826,8 @@ def document_parser(state: AgentState) -> dict:
 
 ```python
 # headless 模式下，progress_callback 为 None，不影响解析逻辑
-index_builder, tables, chapter_index, total_chars = _stream_parse_pdf(
+# v7 NC-04: 同样使用 5 元组解包
+index_builder, tables, chapter_index, total_chars, meta = _stream_parse_pdf(
     file_path=file_path,
     parsed_dir=parsed_dir,
     progress_callback=None,  # headless 模式不需要进度反馈
@@ -2321,7 +2862,7 @@ def _measure_search_recall(
     - 与人工标注的 ground truth 页码对比
     - 返回召回率 = 命中的 ground truth 页数 / 总 ground truth 页数
     
-    用于验收标准 #4：关键信息提取完整率 ≥ 95%
+    用于验收标准 #4：关键信息提取完整率 ≥ 90%
     """
     results = reader.search_pages(test_keywords, top_k=50)
     found_pages = {r.page_num for r in results}
@@ -2367,7 +2908,7 @@ tests/
 │   ├── test_chapter_detection.py  # M2: 章节切分测试
 │   ├── test_reader_lifecycle.py   # M4: Reader 生命周期测试
 │   ├── test_budget_allocation.py  # NC1: 预算分配策略测试
-│   ├── test_ocr_thread_safety.py  # NC2: 预渲染并行 OCR 线程安全测试
+│   ├── test_ocr_process_safety.py  # NC2: 预渲染并行 OCR 进程安全测试
 │   ├── test_sample_ratio.py       # Major: 均匀采样测试
 │   ├── test_page_blob.py          # Major: pages.blob 合并文件测试
 │   └── test_concurrency.py        # Major: 并发限流测试
@@ -2477,11 +3018,16 @@ def test_budget_allocation_no_truncation():
     assert "格式要求" in combined          # format
 ```
 
-#### NC2: 线程安全测试
+#### NC2: 进程安全测试
 
 ```python
-def test_ocr_batch_parallel_no_segfault():
-    """NC2: 验证预渲染 + 多线程 OCR 不触发 segfault."""
+def test_ocr_batch_parallel_no_segfault(tmp_path):
+    """NC2: 验证预渲染 + 多进程 OCR 不触发 segfault.
+    
+    v7.1 M-V7-11: 原 v7 测试 mock `_get_ocr_engine`（v7 已删除该函数），
+    且 patch 在子进程中不生效。重构为 mock ProcessPoolExecutor 本身，
+    在同进程内模拟 OCR 结果。
+    """
     import numpy as np
     from unittest.mock import MagicMock, patch
     
@@ -2497,16 +3043,39 @@ def test_ocr_batch_parallel_no_segfault():
     mock_page.get_pixmap.return_value = mock_pixmap
     mock_doc.__getitem__ = lambda self, idx: mock_page
     
-    # mock PaddleOCR（模拟 OCR 返回结果）
-    mock_ocr = MagicMock()
-    mock_ocr.ocr.return_value = [[[None, ("测试文本", 0.99)]]]
+    # v7.1 M-V7-11: mock ProcessPoolExecutor 本身，避免子进程复杂度
+    # 模拟 pool.submit 返回的 future 直接包含结果
+    def mock_submit(fn, *args, **kwargs):
+        future = MagicMock()
+        # 模拟 OCR 结果
+        page_idx = args[0] if args else kwargs.get('page_idx', 0)
+        future.result.return_value = (page_idx, "测试文本")
+        return future
     
-    with patch('__main__._get_ocr_engine', return_value=mock_ocr):
+    mock_pool = MagicMock()
+    mock_pool.submit = mock_submit
+    
+    # v7.2 M-V7.1-04: 同时 mock as_completed，因为 MagicMock future 不兼容
+    mock_futures = []
+    
+    def mock_submit_and_track(fn, *args, **kwargs):
+        f = mock_submit(fn, *args, **kwargs)
+        mock_futures.append(f)
+        return f
+    
+    mock_pool.submit = mock_submit_and_track
+    
+    with patch('core.large_file.ProcessPoolExecutor', return_value=mock_pool), \
+         patch('core.large_file._calc_ocr_workers', return_value=2), \
+         patch('core.large_file._ocr_worker_init'), \
+         patch('core.large_file.PaddleOCR'), \
+         patch('core.large_file.as_completed', side_effect=lambda fs: list(fs)):
+        
         results = _ocr_batch_parallel_safe(
             doc=mock_doc,
             scan_page_indices=list(range(10)),
             parsed_dir=tmp_path,
-            max_workers=4,
+            max_workers=2,
         )
     
     # 验证：所有 10 页都返回了结果，没有 segfault
@@ -2534,7 +3103,8 @@ def test_two_phase_ocr_integration(tmp_path):
         (pages_dir / f"page_{i:04d}.txt").write_text(f"[扫描页 — 待 OCR: 第 {i} 页]")
     
     # mock _ocr_batch_parallel_safe 返回 OCR 结果
-    with patch('__main__._ocr_batch_parallel_safe') as mock_ocr:
+    # v7.2 m-V7.1-03: 修正 patch 路径
+    with patch('core.large_file._ocr_batch_parallel_safe') as mock_ocr:
         mock_ocr.return_value = {
             3: "第4页OCR文本",
             4: "第5页OCR文本",
@@ -2592,14 +3162,162 @@ def generate_large_pdf_mock(tmp_path, page_count=2000, chars_per_page=3000):
 | C3 LRU 正确性 | 填满缓存后访问旧页面再添加新页面 | 淘汰的是最久未访问的 |
 | C4 上传内存 | 上传 100MB mock 文件 | 峰值内存 < 20MB |
 | C5 API 调用 | 调用 build_generation_graph + invoke | 不抛参数错误 |
-| M1 OCR 单页 | mock PaddleOCR，调用 _ocr_page | 返回文本字符串 |
+| M1 OCR 单页 | mock PaddleOCR，调用 _ocr_worker_task | 返回文本字符串 |
 | M2 章节检测 | 给定含「第一章」的页面文本 | 正确返回章节信息 |
 | M6 断点续传 | 写入 progress.json 后重新解析 | 从断点页继续 |
 | M9 召回率 | 5 类关键词搜索测试 | 平均召回率 ≥ 90% |
 | 端到端 | 200MB mock 文件完整流程 | 不 OOM，不超时 |
 | **NC1 预算分配** | 构造 10 页 × 3000 字符 + 搜索结果，调用 _assemble_relevant_content | combined ≤ 8000 字符且含所有 5 类内容 |
-| **NC2 线程安全** | mock fitz + PaddleOCR，4 线程并行 OCR 10 页 | 无 segfault，所有线程正常完成 |
-| **NC3 两阶段集成** | mock 2000 页（20 页扫描），流式解析 + 批量 OCR | 扫描页 OCR 结果回写到 page 文件 + 索引更新 |
+| **NC2 进程安全** | mock fitz + PaddleOCR，4 进程并行 OCR 10 页 | 无 segfault，所有进程正常完成 |
+| **NC3 两阶段集成** | mock 2000 页（20 页扫描），流式解析 + 批量 OCR | 扫描页 OCR 结果回写 blob + 索引更新 |
 | **采样均匀性** | 构造前 1990 页有文本 + 后 10 页扫描的 mock | text_ratio < 0.1（非 0.0） |
 | **并发限流** | 同时提交 3 个解析请求 | 第 3 个排队等待，前 2 个正常完成 |
 | **pages.blob** | 生成 2000 页 blob + 偏移量索引，随机读取 100 页 | 读取内容与写入一致 |
+
+### 15.5 性能与回归测试（v7 遗留-06 补充）
+
+```python
+# tests/performance/test_memory_peak.py
+"""大文件解析内存峰值测试（v7 遗留-06）."""
+
+def test_streaming_parse_memory_under_100mb():
+    """流式解析 2000 页 mock PDF，内存峰值应 < 100MB.
+    
+    验证点：
+    - 流式解析不一次性加载全部页面文本
+    - PageBlobReader 写入后释放页面文本引用
+    - IncrementalIndexBuilder 内存增长可控
+    """
+    import tracemalloc
+    tracemalloc.start()
+    
+    parsed_dir = generate_large_pdf_mock(tmp_path, page_count=2000)
+    
+    # 模拟流式解析（mock fitz）
+    blob_reader = PageBlobReader(parsed_dir)
+    index_builder = IncrementalIndexBuilder()  # v7.1 m-V7-06: dataclass 无构造参数
+    
+    for i in range(1, 2001):
+        text = f"第{i}页 测试内容文本评分标准..."
+        blob_reader.write_page(i, text)
+        index_builder.add_page(i, text)
+        
+        if i % 500 == 0:
+            current, peak = tracemalloc.get_traced_memory()
+            assert peak < 100 * 1024 * 1024, f"Memory peak {peak/1MB:.1f}MB at page {i}, expected < 100MB"
+    
+    tracemalloc.stop()
+
+
+def test_ocr_process_pool_model_loading_once():
+    """验证 ProcessPoolExecutor initializer 只加载模型一次（v7 NC-01 回归）.
+    
+    验证点：
+    - _ocr_worker_init 只被调用 max_workers 次（不是每页一次）
+    - OCR 100 页的模型加载时间应 < 60s（4 worker × 10-15s）
+    
+    v7.1 M-V7-12: 原 v7 测试使用 nonlocal call_count，但子进程不共享父进程
+    内存（spawn 启动方式），导致计数器始终为 0。改用 multiprocessing.Value
+    跨进程共享计数器。macOS 默认 spawn，Linux 默认 fork（fork 时子进程
+    继承父进程内存快照，nonlocal 可能看到值，但 spawn 不行）。
+    """
+    import time
+    from multiprocessing import Value, ProcessPoolExecutor
+    from concurrent.futures import as_completed
+    
+    # v7.1 M-V7-12: 使用 multiprocessing.Value 跨进程共享计数器
+    init_count = Value('i', 0)  # ctypes int, 初始值 0
+    
+    def mock_init():
+        with init_count.get_lock():
+            init_count.value += 1
+        # 模拟模型加载耗时
+        time.sleep(0.1)
+    
+    def dummy_task():
+        return "ok"
+    
+    start = time.time()
+    # 使用 'spawn' 启动方式确保测试一致性（macOS 默认即为 spawn）
+    ctx = multiprocessing.get_context('spawn')
+    with ctx.ProcessPoolExecutor(max_workers=4, initializer=mock_init) as pool:
+        futures = [pool.submit(dummy_task) for _ in range(100)]
+        for f in as_completed(futures):
+            f.result()
+    elapsed = time.time() - start
+    
+    # initializer 应只调用 4 次（max_workers），不是 100 次
+    assert init_count.value == 4, f"Expected 4 init calls, got {init_count.value}"
+    assert elapsed < 2.0, f"100 tasks took {elapsed:.1f}s, expected < 2s"
+
+
+# tests/regression/test_small_file_unchanged.py
+"""小文件模式回归测试（v7 遗留-06）."""
+
+def test_small_file_uses_inline_mode():
+    """小于 50MB 的文件应走 inline 模式，不受大文件策略影响."""
+    state = factory_state()
+    state["documents"] = [{
+        "path": "/tmp/small.pdf",
+        "filename": "small.pdf",
+        "size": 30 * 1024 * 1024,  # 30MB
+    }]
+    
+    result = document_parser(state)
+    
+    # 验证使用 inline 模式
+    assert result["parse_mode"] == "inline"
+    assert result["parsed_dir"] == ""  # 不创建 parsed_dir
+    # 验证 parsed_content 正常填充
+    assert result["documents"][0].get("parsed_content")
+    assert result["documents"][0].get("parse_mode") == "inline"  # v7.1 m-V7-07: 原断言 .get("streaming") 无效
+
+
+def test_small_file_no_blob_created():
+    """小文件不应创建 pages.blob 文件."""
+    state = factory_state()
+    state["documents"] = [{
+        "path": "/tmp/small.pdf",
+        "filename": "small.pdf",
+        "size": 10 * 1024 * 1024,  # 10MB
+    }]
+    
+    result = document_parser(state)
+    
+    assert "parsed_dir" not in result or not result["parsed_dir"]
+    assert not Path("data/parsed").exists() or not any(Path("data/parsed").iterdir())
+
+
+# tests/performance/test_concurrent_users.py
+"""多用户并发测试（v7 遗留-06）."""
+
+def test_three_concurrent_large_files():
+    """3 个用户同时上传 200MB 文件，验证并发限流."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    results = []
+    errors = []
+    
+    def upload_and_parse(user_id: int):
+        try:
+            state = factory_state()
+            state["documents"] = [{
+                "path": f"/tmp/test_{user_id}.pdf",
+                "filename": f"test_{user_id}.pdf",
+                "size": 200 * 1024 * 1024,
+            }]
+            result = document_parser(state)
+            results.append((user_id, result["parse_mode"]))
+        except Exception as e:
+            errors.append((user_id, str(e)))
+    
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(upload_and_parse, i) for i in range(3)]
+        for f in as_completed(futures):
+            f.result()  # 触发异常
+    
+    # 验证：至少 2 个成功，第 3 个可能排队等待或超时
+    assert len(results) >= 2, f"Expected ≥2 successes, got {len(results)}"
+    assert len(errors) <= 1, f"Expected ≤1 errors, got {len(errors)}"
+```

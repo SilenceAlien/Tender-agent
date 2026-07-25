@@ -161,6 +161,9 @@ _SECTION_PROMPTS = {
 - 授权期限【待填写：授权起止日期】
 - 附法定代表人身份证号【待填写：法定代表人身份证号】和被授权人身份证号【待填写：被授权人身份证号】
 
+招标文件要求：
+{requirements_context}
+
 请直接输出章节内容。""",
 
     "ch3_service": """你是一位资深招投标专家。请撰写"第三章 服务方案"。
@@ -227,6 +230,9 @@ _SECTION_PROMPTS = {
 - 资源配置计划
 - 必须使用 Mermaid flowchart 图表展示项目实施阶段和里程碑
 
+招标文件要求：
+{requirements_context}
+
 请直接输出章节内容。""",
 
     "ch8_after_sales": """你是一位资深招投标专家。请撰写"第八章 售后服务承诺"。
@@ -237,6 +243,9 @@ _SECTION_PROMPTS = {
 - 服务网点分布
 - 定期巡检计划
 - 培训和知识转移
+
+招标文件要求：
+{requirements_context}
 
 请直接输出章节内容。""",
 }
@@ -566,6 +575,15 @@ def _resolve_sections_from_template(state: AgentState) -> list[dict]:
     """
     bid_type = state.get("bid_type", "")
     selected_id = state.get("selected_template_id", "")
+
+    # Phase B3 fix: 劳务外包类/劳务管理服务类 always uses the optimized
+    # 9-section structure from real winning bids, regardless of template
+    # matching.  Template matching with MockEmbedder can select wrong-type
+    # templates (e.g. tpl_service_v1 from 服务类 with only 4 sections),
+    # which would incorrectly restrict the section set.
+    if bid_type and ("劳务管理服务" in bid_type or "劳务外包" in bid_type):
+        return _get_sections_for_bid_type(bid_type)
+
     if not selected_id:
         # No template → use bid-type-aware section set (Phase B3)
         return _get_sections_for_bid_type(bid_type)
@@ -800,7 +818,7 @@ def generate_all_sections_parallel(
                 # Phase B5 (error isolation) — placeholder content on failure
                 failed_section = future_to_section[future]["name"]
                 logger.error(f"Section generation failed for {failed_section}: {e}")
-                name, content = failed_section, f"【生成失败：{e}】"
+                name, content = failed_section, f"【生成失败：{failed_section} — 请手动补充】"
             with lock:
                 results[name] = content
 

@@ -113,6 +113,11 @@ class AgentState(TypedDict):
     # guarantee cross-chapter consistency on project name, bidder, industry, etc.
     project_contract: dict  # ProjectContextContract.to_dict()
 
+    # ── Min Section Chars (spec §⑧) ───────────────────────────────────
+    # Minimum characters per section for completeness check.
+    # Default 8000 in production; tests set 0 to disable.
+    min_section_chars: int
+
     # ── Extracted Requirements ─────────────────────────────────────────
     requirements: dict  # {"scoring": [...], "qualifications": [...], "tech_specs": [...], "format_rules": {...}}
 
@@ -200,6 +205,7 @@ def factory_state(**overrides) -> AgentState:
         "extra_reqs": "",  # 补充说明, 由上传页面传入
         "chunk_size": 1000,  # 文档分块大小, 由上传页面传入
         "project_contract": {},  # ProjectContextContract 序列化, 由 ContractExtractor 构建
+        "min_section_chars": 0,  # Test default: disable 8000-char threshold; production sets 8000
         "requirements": {
             "scoring": [],
             "qualifications": [],

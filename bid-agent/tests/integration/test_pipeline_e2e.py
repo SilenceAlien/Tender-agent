@@ -43,6 +43,7 @@ def e2e_state():
             {"filename": "评分标准.pdf", "type": "pdf", "path": pdf_paths[1]},
         ],
         max_rounds=2,
+        min_section_chars=0,  # Disable 8000-char threshold for E2E tests
     )
 
     yield state

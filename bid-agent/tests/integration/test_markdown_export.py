@@ -564,7 +564,12 @@ class TestDocxTOCFormat:
     """Tests for Table of Contents formatting with tab stops."""
 
     def test_toc_uses_tab_not_dots(self):
-        """TOC entries should use tab character, not hardcoded dot fills."""
+        """TOC entries should use tab character, not hardcoded dot fills.
+
+        F2 fix: H7 changed TOC page numbers from literal "页" text to PAGEREF
+        fields.  Old test searched for paragraphs containing "页", which no
+        longer matches.  Now we find TOC entries by section name + tab char.
+        """
         sections = {
             "第一章 投标函": "内容",
             "第二章 技术方案": "内容",
@@ -576,10 +581,11 @@ class TestDocxTOCFormat:
             from docx import Document
             doc = Document(export_path)
 
-            # Find TOC entries (paragraphs containing "第" and "页")
+            # F2 fix: find TOC entries by section name + tab character,
+            # not by literal "页" (PAGEREF fields don't contain "页").
             toc_entries = [
                 p for p in doc.paragraphs
-                if "第" in p.text and "页" in p.text and "·" not in p.text
+                if "第" in p.text and "\t" in p.text
             ]
             assert len(toc_entries) >= 2
 
@@ -593,7 +599,11 @@ class TestDocxTOCFormat:
                 assert "·" * 5 not in entry.text
 
     def test_toc_has_tab_stops(self):
-        """TOC paragraphs should have right-aligned tab stops with dotted leaders."""
+        """TOC paragraphs should have right-aligned tab stops with dotted leaders.
+
+        F2 fix: find TOC entry by section name + tab character instead of
+        literal "页" (PAGEREF fields don't contain "页" text).
+        """
         sections = {
             "第一章 测试": "内容",
         }
@@ -604,10 +614,10 @@ class TestDocxTOCFormat:
             from docx import Document
             doc = Document(export_path)
 
-            # Find the TOC entry
+            # F2 fix: find TOC entry by section name + tab character
             toc_entry = None
             for p in doc.paragraphs:
-                if "第一章" in p.text and "页" in p.text:
+                if "第一章" in p.text and "\t" in p.text:
                     toc_entry = p
                     break
 

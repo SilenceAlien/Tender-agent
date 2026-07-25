@@ -55,20 +55,67 @@ _CONTEXT_PATTERNS = {
 # ── Format compliance ─────────────────────────────────────────────────
 
 
-def _check_format_compliance(sections: dict[str, str], format_rules: dict) -> list[dict]:
-    """Check format-related compliance issues.
+# ── Format-rule field parsing helpers (no DOCX rendering needed) ────────
 
-    N07 fix: now checks format_rules for structural compliance, not just
-    content length.  While we can't verify page margins/fonts without rendering
-    the DOCX (that happens in DocumentAssembler), we can check:
-    - Section count meets minimum
-    - Each section has adequate length
-    - Required sections are present (投标函, 服务方案, etc.)
-    - format_rules declares required formatting fields
+# Matches "上3.7/下3.5/左2.8/右2.6cm" or "上3.7cm 下3.5cm 左2.8cm 右2.6cm"
+# (separators / units are bridged with .*? so the pattern is unit-agnostic)
+_MARGIN_PAT = re.compile(
+    r"上\s*([\d.]+).*?下\s*([\d.]+).*?左\s*([\d.]+).*?右\s*([\d.]+)",
+    re.IGNORECASE,
+)
+
+
+def _parse_margin(raw: str) -> dict | None:
+    """Parse a page_margin string into {top,bottom,left,right} in cm.
+
+    Returns None if the string can't be parsed (caller flags a manual check).
+    """
+    if not raw:
+        return None
+    m = _MARGIN_PAT.search(raw.replace("：", " ").replace(":", " "))
+    if not m:
+        return None
+    return {
+        "top": m.group(1),
+        "bottom": m.group(2),
+        "left": m.group(3),
+        "right": m.group(4),
+    }
+
+
+def _has_toc(sections: dict[str, str]) -> bool:
+    """Best-effort detection of a table-of-contents section / heading."""
+    for name, content in sections.items():
+        if "目录" in name:
+            return True
+    for content in sections.values():
+        # A line that is exactly "目录" (possibly with leading spaces)
+        if re.search(r"(?:^|\n)\s*目录\s*(?:\n|$)", content):
+            return True
+    return False
+
+
+def _check_format_compliance(sections: dict[str, str], format_rules: dict) -> list[dict]:
+    """Check format-related compliance issues (M6 content-level fix).
+
+    Previously this node only verified that format_rules *declared* certain
+    fields (declaration-level).  M6 requires checking the real format elements
+    per system-workflow.md §⑪:
+      - 页边距（上下左右）
+      - 字体（正文仿宋 / 标题黑体楷体）
+      - 行距
+      - 目录（TOC）
+      - 页眉页脚
+      - seal_requirement（签章要求）
+
+    We cannot render a DOCX here, so for items that need a real renderer we
+    emit explicit **人工确认** items (severity=low) instead of silently
+    passing.  Where the generated section text lets us, we do a content-level
+    sanity check.  format_rules fields are compared/validated when present.
     """
     issues: list[dict] = []
 
-    # Check minimum content per section
+    # 1. Minimum content per section (keep)
     for name, content in sections.items():
         if len(content.strip()) < 100:
             issues.append({
@@ -78,28 +125,188 @@ def _check_format_compliance(sections: dict[str, str], format_rules: dict) -> li
                 "severity": "medium",
             })
 
-    # N07: Check that format_rules declares essential formatting fields
-    if format_rules:
-        essential_fields = ["page_margin", "font", "line_spacing"]
-        missing_fields = [f for f in essential_fields if not format_rules.get(f)]
-        if missing_fields:
+    # No format_rules at all → everything is unrenderable, flag as manual check
+    if not format_rules:
+        issues.append({
+            "item": "格式规则缺失",
+            "section": "全局",
+            "detail": (
+                "未提供 format_rules，页边距/字体/行距/目录/页眉页脚/签章"
+                "均需在 Word 中人工确认"
+            ),
+            "severity": "medium",
+        })
+        return issues
+
+    # 2. 页边距 — content-level: parse declared margins, list for manual confirm
+    margin_raw = format_rules.get("page_margin")
+    if margin_raw:
+        parsed = _parse_margin(margin_raw)
+        if parsed:
             issues.append({
-                "item": "格式规则缺失",
+                "item": "页边距声明核对",
                 "section": "全局",
                 "detail": (
-                    f"format_rules 中缺少必要字段：{', '.join(missing_fields)}。"
-                    f"这些字段在 DocumentAssembler 中用于设置页边距、字体、行距。"
+                    f"format_rules 声明页边距：上{parsed['top']}/下{parsed['bottom']}/"
+                    f"左{parsed['left']}/右{parsed['right']}cm。"
+                    "需在 Word 中人工确认实际页面设置与之一致"
                 ),
                 "severity": "low",
+                "check_status": "manual_confirm",
             })
-
-        # Check seal requirement is declared
-        if not format_rules.get("seal_requirement"):
+        else:
             issues.append({
-                "item": "签章要求未声明",
+                "item": "页边距格式异常",
                 "section": "全局",
-                "detail": "format_rules 中未声明签章要求（seal_requirement），标书须加盖公章",
+                "detail": (
+                    f"page_margin 值「{margin_raw}」无法解析，"
+                    "请在 Word 中人工确认页边距设置"
+                ),
                 "severity": "medium",
+            })
+    else:
+        issues.append({
+            "item": "页边距未声明",
+            "section": "全局",
+            "detail": "format_rules 未声明 page_margin，需在 Word 中人工确认页边距",
+            "severity": "medium",
+        })
+
+    # 3. 字体 — content-level: 正文应仿宋，标题应黑体/楷体
+    font_raw = format_rules.get("font")
+    if font_raw:
+        has_body_fang = "仿宋" in font_raw
+        has_title_hei = ("黑体" in font_raw) or ("楷体" in font_raw)
+        if not has_body_fang:
+            issues.append({
+                "item": "正文字体未声明仿宋",
+                "section": "全局",
+                "detail": (
+                    f"font 声明「{font_raw}」未包含仿宋体，"
+                    "正文通常须用仿宋_GB2312，请在 Word 中人工确认"
+                ),
+                "severity": "medium",
+            })
+        if not has_title_hei:
+            issues.append({
+                "item": "标题字体未声明黑体/楷体",
+                "section": "全局",
+                "detail": (
+                    f"font 声明「{font_raw}」未声明标题用黑体或楷体，"
+                    "需在 Word 中人工确认标题字体"
+                ),
+                "severity": "low",
+                "check_status": "manual_confirm",
+            })
+        # Real font rendering can't be verified statically → explicit confirm
+        issues.append({
+            "item": "字体需人工确认",
+            "section": "全局",
+            "detail": f"声明字体「{font_raw}」，实际 Word 字体/字形需在渲染后人工确认",
+            "severity": "low",
+            "check_status": "manual_confirm",
+        })
+    else:
+        issues.append({
+            "item": "字体未声明",
+            "section": "全局",
+            "detail": "format_rules 未声明 font，需在 Word 中人工确认字体",
+            "severity": "medium",
+        })
+
+    # 4. 行距 — content-level: declared value, real rendering manual confirm
+    line_spacing = format_rules.get("line_spacing")
+    if line_spacing:
+        issues.append({
+            "item": "行距需人工确认",
+            "section": "全局",
+            "detail": f"声明行距「{line_spacing}」，真实行距需在 Word 中人工确认",
+            "severity": "low",
+            "check_status": "manual_confirm",
+        })
+    else:
+        issues.append({
+            "item": "行距未声明",
+            "section": "全局",
+            "detail": "format_rules 未声明 line_spacing，需在 Word 中人工确认行距",
+            "severity": "medium",
+        })
+
+    # 5. 目录（TOC）— content-level detection + manual confirm
+    if _has_toc(sections):
+        issues.append({
+            "item": "目录已生成",
+            "section": "全局",
+            "detail": "检测到目录章节/标题，目录格式（页码对齐等）需在 Word 中人工确认",
+            "severity": "low",
+            "check_status": "manual_confirm",
+        })
+    else:
+        issues.append({
+            "item": "目录待确认",
+            "section": "全局",
+            "detail": "未检测到目录章节，标书通常需含目录，请在 Word 中人工确认是否已生成目录",
+            "severity": "low",
+            "check_status": "manual_confirm",
+        })
+
+    # 6. 页眉页脚 — format_rules may declare header/footer; else manual confirm
+    header = format_rules.get("header")
+    footer = format_rules.get("footer")
+    if header or footer:
+        declared = []
+        if header:
+            declared.append(f"页眉「{header}」")
+        if footer:
+            declared.append(f"页脚「{footer}」")
+        issues.append({
+            "item": "页眉页脚声明核对",
+            "section": "全局",
+            "detail": f"format_rules 声明{'、'.join(declared)}，需在 Word 中人工确认实际页眉页脚",
+            "severity": "low",
+            "check_status": "manual_confirm",
+        })
+    else:
+        issues.append({
+            "item": "页眉页脚待确认",
+            "section": "全局",
+            "detail": "format_rules 未声明 header/footer，页眉页脚需在 Word 中人工确认",
+            "severity": "low",
+            "check_status": "manual_confirm",
+        })
+
+    # 7. 签章要求（seal_requirement）— declaration + content-level reflection
+    seal = format_rules.get("seal_requirement")
+    if not seal:
+        issues.append({
+            "item": "签章要求未声明",
+            "section": "全局",
+            "detail": "format_rules 中未声明签章要求（seal_requirement），标书须加盖公章",
+            "severity": "medium",
+        })
+    else:
+        # Content-level: does the document text actually mention 公章/盖章?
+        seal_mentioned = any(
+            re.search(r"公章|盖章|签章|骑缝", content) for content in sections.values()
+        )
+        if seal_mentioned:
+            issues.append({
+                "item": "签章要求已体现",
+                "section": "全局",
+                "detail": f"声明签章要求「{seal}」，且章节文本已提及盖章/公章，实际盖章位置需在 Word 中人工确认",
+                "severity": "low",
+                "check_status": "manual_confirm",
+            })
+        else:
+            issues.append({
+                "item": "签章要求待确认",
+                "section": "全局",
+                "detail": (
+                    f"声明签章要求「{seal}」，但章节文本未提及公章/盖章，"
+                    "请确认是否需在投标函/签章页说明盖章要求，并在 Word 中人工确认"
+                ),
+                "severity": "low",
+                "check_status": "manual_confirm",
             })
 
     return issues
@@ -160,6 +367,74 @@ def _check_legal_compliance(sections: dict[str, str]) -> list[dict]:
                     "severity": "high",
                     "detail": "包含具体财务数据，请确认有对应审计报告支撑",
                 })
+
+        # 4. M5 fix: Intellectual property infringement check (著作权法)
+        # Detect potential unauthorized use of third-party cases/images
+        ip_patterns = [
+            r"(?:本案例|本项目|本产品).{0,10}(?:著作权|版权所有|©|\(c\))",
+            r"未经授权.{0,10}(?:使用|引用|转载)",
+        ]
+        for pat in ip_patterns:
+            if re.search(pat, content):
+                issues.append({
+                    "item": "知识产权风险",
+                    "section": section_name,
+                    "severity": "medium",
+                    "detail": "可能存在未经授权使用他人案例/图片的情况，请确认授权或脱敏处理",
+                })
+
+        # 5. M5 fix: Confidential info leakage check (保密法)
+        # N3 fix: 收敛正则，避免误报 FAIL。
+        #   仅当上下文表明"实际泄露了第三方保密信息"才判违规：
+        #     (a) 敏感标识符（手机号/身份证号/银行账号）必须带有敏感上下文
+        #         关键词（账号/卡号/手机/身份证…）锚定，避免把合同编号、
+        #         项目编号等普通长数字串误报为银行账号/身份证号；
+        #     (b) 文本型泄露：明确"泄露/披露/外泄 了 XX 商业秘密/保密数据"，
+        #         且不在正面承诺语境（承诺/遵守/不泄露）中。
+        #   "我方承诺保密""遵守保密协议""不会泄露"等正面声明判合规。
+        _sensitive_prefix = (
+            r"(?:手机|联系|银行|对公|账户|账号|卡号|身份证|身份證|"
+            r"证号|证件号|统一社会信用代码|开户)"
+        )
+        phone_pattern = re.compile(_sensitive_prefix + r"[:：]?\s*1[3-9]\d{9}")
+        id_card_pattern = re.compile(_sensitive_prefix + r"[:：]?\s*\d{17}[\dXx]")
+        bank_account_pattern = re.compile(_sensitive_prefix + r"[:：]?\s*\d{16,19}")
+
+        for pat_name, pat in [
+            ("手机号", phone_pattern),
+            ("身份证号", id_card_pattern),
+            ("银行账号", bank_account_pattern),
+        ]:
+            matches = pat.findall(content)
+            if matches:
+                issues.append({
+                    "item": "保密信息泄露",
+                    "section": section_name,
+                    "severity": "high",
+                    "detail": f"检测到 {len(matches)} 处疑似{pat_name}，需脱敏处理",
+                })
+
+        # 文本型泄露：泄露/披露/外泄 + 第三方保密内容；
+        # 前置正面承诺/否定词（承诺/遵守/不泄露/绝不…）则不算泄露。
+        # 注：Python re 不支持变长后顾，故用可选捕获组判断前缀语境。
+        _leak_verbs = r"(?:泄露|泄漏|披露|外泄|透漏)"
+        _positive_ctx = (
+            r"(?:承诺|保证|确保|遵守|严守|严格|不会|决不|绝不|未|没有|不予以?|不予)"
+        )
+        leak_pattern = re.compile(
+            r"(" + _positive_ctx + r")?"
+            + _leak_verbs
+            + r"[^。；;]{0,15}?(?:商业秘密|保密(?:数据|信息|资料|内容|文件)|"
+            r"机密|敏感信息|客户资料|内部资料)"
+        )
+        leak_match = leak_pattern.search(content)
+        if leak_match and not leak_match.group(1):
+            issues.append({
+                "item": "保密信息泄露",
+                "section": section_name,
+                "severity": "high",
+                "detail": "文本中出现第三方保密信息泄露表述，请确认已脱敏或获得授权",
+            })
 
     return issues
 

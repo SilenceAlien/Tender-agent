@@ -10,6 +10,24 @@ Config (config/evolution.yaml):
         min_score_threshold: 0.7
         max_candidates: 3
         injection_mode: "prepend"  # "prepend" | "replace" | "append"
+
+─── L9 接入状态（code-audit / cluster_C7_v2.md）─────────────────────────
+本模块当前【未被任何 pipeline 节点调用】——属于「已实现、未接线」的死代码
+（Grep 全仓仅 __init__.py 导出、tests 实例化，无节点 import/调用本类）。
+它读取 PromptRegistry 的高分 prompt 变体，但 Registry 从未被写入（无 .save 调用），
+故 inject_into_prompt() 当前恒返回 base_prompt（空候选 → 降级）。
+
+与 ConsistencyLessonStore 注入路径的关系：并行、非重叠。ConsistencyLessonStore
+注入「结构化指令规则」(H11 已修并接通)；本 Selector 注入「整段最优 prompt 变体」，
+机制不同、具备独特价值，但本版本未接线。
+
+若未来需接入（建议【不要在此版本接线】，避免与 Store 注入冲突/引入风险）：
+  · 读取点：在 core/nodes/section_generator.py 的 _get_section_prompt 末尾、
+    ConsistencyLessonStore 注入之后调用 inject_into_prompt(...)。
+  · 必须确保 injection_mode != "replace"：replace 会整体覆盖已接好的
+    契约/经验/RAG/反编造 结构化 prompt，风险高；prepend/append 更安全。
+  · 同时必须给 PromptRegistry 接 .save() 写入路径（见 prompt_registry.py 顶部
+    L9 说明），否则 Selector 永远空候选、接线也仅是空操作。
 """
 
 import logging

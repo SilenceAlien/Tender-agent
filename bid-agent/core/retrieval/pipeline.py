@@ -63,6 +63,7 @@ class RetrievalPipeline:
         embedder: BaseEmbedder,
         indices: dict[str, VectorIndexManager] | None = None,
         rrf_k: int = RRF_K,
+        metadata_store: dict[str, dict] | None = None,
     ):
         """Initialize pipeline.
 
@@ -70,10 +71,14 @@ class RetrievalPipeline:
             embedder: Embedding provider for query vectorization
             indices: Dict of {index_name: VectorIndexManager}
             rrf_k: RRF constant
+            metadata_store: Optional {doc_id: metadata_dict} used for the
+                metadata-filtering step (§4.2 step 5). If omitted, results
+                whose metadata is unavailable are passed through untouched.
         """
         self.embedder = embedder
         self.indices: dict[str, VectorIndexManager] = indices or {}
         self.rrf_k = rrf_k
+        self.metadata_store: dict[str, dict] = metadata_store or {}
 
     def add_index(self, name: str, index: VectorIndexManager) -> None:
         """Register an index in the pipeline."""
@@ -122,12 +127,46 @@ class RetrievalPipeline:
         # RRF fusion
         fused = reciprocal_rank_fusion(ranked_lists, k=self.rrf_k, top_n=final_k)
 
-        # Metadata filtering (placeholder — metadata stored externally in Phase 3)
+        # Metadata filtering (§4.2 step 5) — filter fused results by doc metadata.
+        # Each key in metadata_filter must be satisfied by the doc's stored
+        # metadata: str→case-insensitive substring, otherwise exact equality.
+        # Docs with no available metadata are passed through (cannot be judged).
         if metadata_filter:
-            # Future: filter based on metadata in a metadata store
-            pass
+            filtered: list[tuple[str, float]] = []
+            for doc_id, score in fused:
+                meta = self.metadata_store.get(doc_id)
+                if meta is None or not _matches_metadata(meta, metadata_filter):
+                    # No metadata available → keep (safe default); otherwise drop
+                    # only when it explicitly fails the match.
+                    if meta is None:
+                        filtered.append((doc_id, score))
+                    continue
+                filtered.append((doc_id, score))
+            logger.info(
+                f"MetadataFilter: {len(filtered)}/{len(fused)} docs passed "
+                f"filter {metadata_filter}"
+            )
+            fused = filtered
 
         return fused
+
+
+def _matches_metadata(meta: dict, metadata_filter: dict[str, Any]) -> bool:
+    """Return True iff every key in metadata_filter is satisfied by meta.
+
+    String expected values match case-insensitively by substring containment;
+    non-string expected values must equal the actual value exactly.
+    """
+    for key, expected in metadata_filter.items():
+        actual = meta.get(key)
+        if actual is None:
+            return False
+        if isinstance(expected, str) and isinstance(actual, str):
+            if expected.lower() not in actual.lower():
+                return False
+        elif expected != actual:
+            return False
+    return True
 
 
 def create_pipeline(

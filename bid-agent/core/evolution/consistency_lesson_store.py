@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,22 @@ _SEVERITY_MAP = {
     "format_violation": "medium",
     "legal_violation": "high",
 }
+
+
+def _is_valid_keyword(kw: str) -> bool:
+    """关键词最小长度约束（M11 修复）。
+
+    单字中文（如「人」「元」）或 1~2 字母的英文/数字缺乏区分度，做子串匹配
+    会过度命中、污染经验检索，使经验失去区分能力。要求：
+    - 纯 ASCII 字母/数字：长度 ≥ 3
+    - 含中文/混合：长度 ≥ 2（即至少 2 个汉字或 1 汉字+其他字符）
+    """
+    kw = (kw or "").strip()
+    if not kw:
+        return False
+    if re.fullmatch(r"[A-Za-z0-9]+", kw):
+        return len(kw) >= 3
+    return len(kw) >= 2
 
 
 class ConsistencyLessonStore:
@@ -72,12 +89,10 @@ class ConsistencyLessonStore:
             existing_kw = set(lesson.get("keywords", []))
             sim = self._jaccard(keywords, existing_kw)
             section_overlap = bool(set(sections) & set(lesson.get("applicable_sections", [])))
-            # AND 逻辑：同时满足 keyword 相似度和章节重叠才合并。
-            # 避免仅有章节重叠（如都涉及「投标函」）但问题完全不同就被错误合并。
+            # AND 逻辑（§4.3 去重=Jaccard+章节重叠）：必须同时满足
+            # keyword 相似度阈值「且」章节重叠才合并。
+            # 仅有相似度（无章节重叠）的不同章节经验保持独立，避免误并。
             if sim >= _SIMILARITY_THRESHOLD and section_overlap:
-                return lesson
-            # 特殊情况：keywords 高度重合（≥0.6）时即使无章节重叠也合并
-            if sim >= 0.6:
                 return lesson
         return None
 
@@ -99,7 +114,8 @@ class ConsistencyLessonStore:
         applicable_bid_types = applicable_bid_types or []
         severity = severity or _SEVERITY_MAP.get(issue_type, "medium")
         directive_text = directive_text or rule
-        keyword_set = set(keywords)
+        # M11 修复：过滤掉单字/过短关键词，只保留有区分度的短语。
+        keyword_set = {kw for kw in keywords if _is_valid_keyword(kw)}
 
         existing = self._find_similar(issue_type, keyword_set, applicable_sections)
         if existing:
@@ -156,8 +172,10 @@ class ConsistencyLessonStore:
             applicable_sections = lesson.get("applicable_sections", [])
             keywords = lesson.get("keywords", [])
             section_match = any(sec in section_name or section_name in sec for sec in applicable_sections)
+            # M11 修复：关键词兜底仅用有区分度的短语（长度≥2），避免单字关键词
+            # 在任意章节名中偶然命中造成经验过注入（false-positive）。
             if not section_match:
-                section_match = any(kw in section_name for kw in keywords)
+                section_match = any(len(kw) >= 2 and kw in section_name for kw in keywords)
             if section_match:
                 result.append(lesson)
         return sorted(result, key=lambda x: x.get("occurrence_count", 0), reverse=True)

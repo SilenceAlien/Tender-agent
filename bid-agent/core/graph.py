@@ -111,16 +111,6 @@ def route_after_compliance(state: AgentState) -> Literal["ScoreSimulator", "Feed
     return "ScoreSimulator"
 
 
-def route_after_score_sim(state: AgentState) -> Literal["HumanReviewGate", "DocumentAssembler"]:
-    """P1-3: route through HumanReviewGate before final assembly.
-
-    In headless mode (no GUI), the gate auto-approves and DocumentAssembler
-    runs immediately.  In interactive mode, the gate returns "pending" and
-    the GUI is expected to call resume_after_review() before re-invoking.
-    """
-    return "HumanReviewGate"
-
-
 def route_after_review(state: AgentState) -> Literal["DocumentAssembler", "FeedbackProcessor", "__end__"]:
     """P1-3: human review verdict determines next step.
 
@@ -189,12 +179,18 @@ def route_after_verification(state: AgentState) -> Literal["EligibilityChecker",
     return "__end__"
 
 
-def route_after_eligibility(state: AgentState) -> Literal["TemplateMatcher", "__end__"]:
-    """Phase C1: terminate pipeline if enterprise lacks required qualifications.
+def route_after_eligibility(state: AgentState) -> Literal["TemplateMatcher"]:
+    """Phase C1: route based on enterprise qualification check result.
 
-    A FAIL verdict means a hard threshold is not met — generating 8 chapters
-    of bid content would be wasted effort since the bid will be rejected at
-    the eligibility check stage by the evaluation committee.
+    F3 fix: Previously a FAIL verdict terminated the pipeline silently
+    (return "__end__"), causing zero output with no user-visible error.
+    In practice, real tender documents almost always trigger FAIL because
+    company_quals.json cannot perfectly cover all extracted requirements.
+
+    Now ALL verdicts (PASS / WARNING / FAIL) route to TemplateMatcher so the
+    user always gets a draft document.  The ``eligibility_report`` remains
+    in state for the user to review — they can decide whether to proceed
+    with a bid that fails hard eligibility thresholds.
     """
     report = state.get("eligibility_report", {})
     verdict = report.get("verdict", "PASS")
@@ -202,9 +198,9 @@ def route_after_eligibility(state: AgentState) -> Literal["TemplateMatcher", "__
         missing = report.get("missing_quals", [])
         logger.warning(
             f"EligibilityChecker FAIL — missing {len(missing)} quals: "
-            f"{missing[:3]}. Terminating pipeline."
+            f"{missing[:3]}. Continuing pipeline (user will see eligibility "
+            f"report in final state)."
         )
-        return "__end__"
     return "TemplateMatcher"
 
 
@@ -288,11 +284,12 @@ def build_graph(
         route_after_verification,
         {"EligibilityChecker": "EligibilityChecker", "__end__": END},
     )
-    # Phase C1: EligibilityChecker FAIL → END, PASS/WARNING → TemplateMatcher
+    # F3 fix: EligibilityChecker always routes to TemplateMatcher (even on FAIL).
+    # Previously FAIL → __end__ caused silent zero-output dead end.
     graph.add_conditional_edges(
         "EligibilityChecker",
         route_after_eligibility,
-        {"TemplateMatcher": "TemplateMatcher", "__end__": END},
+        {"TemplateMatcher": "TemplateMatcher"},
     )
     graph.add_edge("TemplateMatcher", "SectionGenerator")
     graph.add_edge("SectionGenerator", "QualityChecker")
@@ -466,10 +463,11 @@ def build_generation_graph(
     graph.add_node("HumanReviewGate", human_review_gate)
     graph.add_node("DocumentAssembler", doc_assembler)
 
+    # F3 fix: EligibilityChecker always routes to TemplateMatcher (even on FAIL).
     graph.add_conditional_edges(
         "EligibilityChecker",
         route_after_eligibility,
-        {"TemplateMatcher": "TemplateMatcher", "__end__": END},
+        {"TemplateMatcher": "TemplateMatcher"},
     )
     graph.add_edge("TemplateMatcher", "SectionGenerator")
     graph.add_edge("SectionGenerator", "QualityChecker")

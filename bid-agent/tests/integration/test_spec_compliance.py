@@ -417,10 +417,10 @@ class TestUS5KnowledgeBaseRetrieval:
         from core.retrieval.faiss_index import VectorIndexManager
         from core.retrieval.pipeline import RetrievalPipeline
 
-        embedder = MockEmbedder(dim=64, seed=42)
+        embedder = MockEmbedder(dim=1536, seed=42)
 
         # Build "historical" index with various bid content
-        historical = VectorIndexManager(dim=64)
+        historical = VectorIndexManager(dim=1536)
         historical_content = [
             "劳务管理服务方案 人员配置 10人团队 PMP项目经理",
             "物业服务安全管控 24小时巡逻 消防演练",
@@ -468,17 +468,17 @@ class TestUS5KnowledgeBaseRetrieval:
         # Build and search indices
         indices = build_template_index()
 
-        # For "服务" type, querying with "劳务管理" should return
+        # For "服务类" type, querying with "劳务管理" should return
         # service-related templates
         from core.retrieval.embeddings import MockEmbedder
 
-        embedder = MockEmbedder(dim=64, seed=1)
+        embedder = MockEmbedder(dim=1536, seed=1)
         import numpy as np
 
         query = embedder.embed_query("劳务管理 人员配置 服务方案").reshape(1, -1)
 
-        if "服务" in indices:
-            results = indices["服务"].search(query, k=3)
+        if "服务类" in indices:
+            results = indices["服务类"].search(query, k=3)
             assert len(results[0]) == 3
             # Top result should be service-related
             top_ids = [r[0] for r in results[0]]
@@ -490,8 +490,8 @@ class TestUS5KnowledgeBaseRetrieval:
         from core.retrieval.faiss_index import VectorIndexManager
         import numpy as np
 
-        embedder = MockEmbedder(dim=64, seed=99)
-        mgr = VectorIndexManager(dim=64)
+        embedder = MockEmbedder(dim=1536, seed=99)
+        mgr = VectorIndexManager(dim=1536)
 
         data = ["招标文件内容A", "招标文件内容B", "招标文件内容C"]
         ids = ["bid_a", "bid_b", "bid_c"]
@@ -554,13 +554,15 @@ class TestSuccessCriteria:
 
         types = get_template_types()
         assert len(types) == 7
-        assert "服务" in types
-        assert "货物" in types
-        assert "软件" in types
-        assert "工程" in types
-        assert "集成" in types
-        assert "运维" in types
-        assert "劳务外包" in types
+        # N08 fix: TEMPLATES keys now use "类" suffix; "软件" removed,
+        # "劳务管理服务类" added
+        assert "服务类" in types
+        assert "货物类" in types
+        assert "工程类" in types
+        assert "集成类" in types
+        assert "运维类" in types
+        assert "劳务外包类" in types
+        assert "劳务管理服务类" in types
 
     def test_success_docx_export_format(self):
         """导出DOCX含目录、正确标题层级、仿宋/黑体字体"""

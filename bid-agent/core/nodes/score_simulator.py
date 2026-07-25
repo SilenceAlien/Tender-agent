@@ -20,6 +20,11 @@ from core.state import AgentState, NodeStatus
 
 logger = logging.getLogger(__name__)
 
+# 送 LLM 评分的每章截断长度，对齐 quality_checker.py 的完整度门槛 8000 字
+# （quality_checker.py:475 `content[:8000]` / :581 默认 min_section_chars=8000），
+# 避免「质检要求 8000 字完整度」与「评分只喂 6000 字」逻辑不自洽（L6）。
+MAX_SECTION_CHARS_FOR_LLM = 8000
+
 # ── Prompt ─────────────────────────────────────────────────────────────
 
 _SCORE_SIM_PROMPT = """你是一位资深的招投标评审专家。请模拟评审以下标书章节内容，按评分标准逐项打分。
@@ -193,7 +198,7 @@ def _llm_score(state: AgentState, llm_fn: Callable[[str], str]) -> dict:
         for item in scoring_items
     )
     sections_text = "\n\n".join(
-        f"【{name}】\n{content[:6000]}"
+        f"【{name}】\n{content[:MAX_SECTION_CHARS_FOR_LLM]}"
         for name, content in sections.items()
     )
 

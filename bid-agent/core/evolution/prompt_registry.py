@@ -17,6 +17,30 @@ Schema (SQLite table: prompt_registry):
     avg_score REAL                -- Running average across uses
     created_at TEXT NOT NULL      -- ISO 8601
     updated_at TEXT NOT NULL
+)
+
+─── L9 接入状态（code-audit / cluster_C7_v2.md）─────────────────────────
+本模块当前【未被任何 pipeline 节点调用】——属于「已实现、未接线」的死代码
+（Grep 全仓仅 __init__.py 导出、tests 实例化，无节点 import/调用本类，
+且无任何 .save() 写入路径）。自进化闭环实际只走 ConsistencyLessonStore 注入。
+
+与 ConsistencyLessonStore 注入路径的关系（并行、非重叠）：
+  · ConsistencyLessonStore：问题→结构化「指令规则」(directive)，注入 prompt 说
+    “不要怎么做 / 要保持一致”，由 FeedbackProcessor→Extractor→Store→SectionGenerator 接通（H11 已修）。
+  · PromptRegistry：保存「整段高分 prompt 变体」(prompt_text) 并按历史表现回灌，
+    机制不同（选最优 prompt 变体），具备 Store 没有的独特价值，但本仓从未被写入。
+
+若未来需接入（建议【不要在此版本接线】，避免与 Store 注入冲突/引入风险）：
+  1) 写入点：在 QualityChecker 给出 PASS + 高 completeness_score 的章节处调用
+     self.save(section_name, bid_type, prompt_text=该章节实际构造的 prompt,
+               completeness_score=..., quality_verdict="PASS")。注意需明确
+     prompt_text 的来源（当前 _get_section_prompt 不回传它），改动点 > 20 行。
+  2) 读取点：在 core/nodes/section_generator.py 的 _get_section_prompt 末尾、
+     ConsistencyLessonStore 注入之后，调 PromptSelector.inject_into_prompt(...)
+     做变体回灌——且必须确保 injection_mode != "replace"（replace 会整体覆盖
+     已接好的 契约/经验/RAG/反编造 结构化 prompt，风险高）。
+  3) Registry 默认空库：未写入时 Selector 始终返回 [] → 降级为原 base_prompt，
+     故「只接读取不接写入」为永久空操作、无收益，必须同时接写入才有意义。
 """
 
 import json

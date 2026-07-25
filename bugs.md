@@ -854,3 +854,339 @@ pytest 507 全通过却未发现上述 14 个问题，说明存在以下盲区�
 - **真实 LLM 未测**：本次用 mock LLM 测试，真实 LLM 调用（含 DeepSeek/OpenAI 实际 API）未测，N03（模型名）需真实 API 验证。
 - **性能未测**：PRD 要求"初稿生成 <10 分钟""文档解析 <30 秒"，本次未做性能基准测试（mock LLM 无意义）。
 - **测试脚本**：动态功能测试脚本位于 `/tmp/bid_smoke/smoke_test.py`，问题列表位于 `/tmp/bid_smoke/issues.json`。
+
+---
+
+# 第三轮代码审查 — 变更增量测试报告（2026-07-18）
+
+> 审查日期：2026-07-18
+> 审查范围：git diff 未提交变更（10 个文件，+1602/-430 行）
+> 测试方法：增量代码审查 + 动态验证（python 脚本验证过滤逻辑和匹配逻辑）+ pytest 套件
+> pytest 结果：**507 通过 / 0 失败**（22.95s）
+> 仅记录问题，不做修复
+
+## 一、变更文件清单
+
+| 文件 | 变更量 | 变更概述 |
+|------|--------|---------|
+| `core/nodes/eligibility_checker.py` | +270 行 | 新增"软要求"过滤机制（9 类模式），自动通过非证书类资质要求 |
+| `core/nodes/req_extractor.py` | +9 行 | `MAX_INPUT_CHARS` 从 8000 提升到 30000 |
+| `core/nodes/section_generator.py` | +9 行 | 劳务类标书跳过模板匹配，直接使用 9 章结构 |
+| `core/nodes/template_matcher.py` | +40 行 | 新增 bid_type 过滤，避免跨类型模板误匹配 |
+| `gui/app.py` | +34 行 | 新增文件日志配置（`~/.bid-agent/logs/bid-agent.log`） |
+| `gui/components/feedback_form.py` | +104/-18 行 | 重写反馈表单：支持累积多条反馈后统一应用，触发管道重新生成 |
+| `gui/panels/review_panel.py` | +11 行 | 新增失败章节检测（检查"生成失败"标记） |
+| `gui/panels/upload_panel.py` | +25/-16 行 | 投标人名称改为必填项；移除"软件类"选项；默认选中"服务类" |
+| `data/consistency_lessons.json` | +40 行 | 一致性经验库数据更新 |
+| `specs/009-large-file-strategy/spec.md` | +1490/-430 行 | 大文件策略规范文档更新 |
+
+## 二、旧 Bug 状态核查（BUG-04/06/07/11 未验证项）
+
+| 编号 | 状态 | 说明 |
+|------|:--:|------|
+| BUG-04 | ❓ 仍未验证 | FAISS save/load 向量丢失，本次未测持久化场景 |
+| BUG-06 | ❓ 仍未验证 | mark_used off-by-one，本次未测 |
+| BUG-07 | ❓ 仍未验证 | avg_revision_rounds 公式，本次未测 |
+| BUG-11 | ❓ 仍未验证 | HNSW reconstruct，本次未测 |
+
+## 三、N01-N14 修复状态核查
+
+| 编号 | 状态 | 说明 |
+|------|:--:|------|
+| N01 | ✅ 已修复 | `AgentState` 已添加 `export_path: str` 字段 |
+| N02 | ✅ 已修复 | review_panel 新增"通过/驳回"按钮，通过后调用 doc_assembler；feedback_form 新增"应用反馈并重新生成"按钮 |
+| N03 | ✅ 已修复 | DeepSeek 模型名已改为 `deepseek-chat` / `deepseek-reasoner` |
+| N04 | ❌ 未修复 | 仍无节点级模型配置 UI |
+| N05 | ✅ 已修复 | `cross_reference_checker` 新增 `_check_contract_deviation()` |
+| N06 | ✅ 已修复 | `cross_reference_checker` 新增 `_check_tech_parameter_consistency()` |
+| N07 | ❌ 未修复 | `_check_format_compliance` 仍不使用 `format_rules` |
+| N08 | ⚠️ 部分修复 | upload_panel 和 TEMPLATE_TYPES 已对齐（带"类"）；但 `template_library.py` 的 `TEMPLATES` 字典键仍不带"类"，且缺"劳务管理服务"键 |
+| N09 | ✅ 已修复 | `_heuristic_score` 已使用字符 n-gram 切分中文 |
+| N10 | ✅ 已修复 | 无 sections 时返回 "pending" 而非 "rejected" |
+| N11 | ✅ 已修复 | provider 不再硬编码 deepseek |
+| N12 | ✅ 已修复 | 默认选中 index=0（"服务类"） |
+| N13 | ✅ 已修复 | 模块注释已更新 |
+| N14 | ✅ 已修复 | PRD 已同步更新为 14 节点 |
+
+## 四、新发现问题（N15 ~ N22）
+
+### N15: eligibility_checker `_DOC_PATTERNS` 正则过于宽泛，合法资质被误过滤 🔴
+
+- **文件**：`core/nodes/eligibility_checker.py` — `_DOC_PATTERNS` 列表（第 89-113 行）
+- **严重程度**：高
+- **类型**：误报 / 过滤缺陷
+
+**问题描述**：
+
+`_DOC_PATTERNS` 包含以下过度宽泛的正则模式：
+
+```python
+".*运营方案",
+".*培训支持方案",
+".*实施方案",
+".*管理方案",
+".*服务方案",
+".*技术方案",
+".*保障方案",
+".*应急预案",
+```
+
+这些模式会匹配任何以这些词结尾的字符串，包括合法的资质证书名称。
+
+**已验证的误过滤案例**（通过 python 脚本确认）：
+
+| 输入资质名称 | 应被保留 | 实际结果 |
+|-------------|---------|---------|
+| `信息技术服务方案资质` | ✅ 是 | ❌ 被过滤为"软要求" |
+| `质量管理方案认证` | ✅ 是 | ❌ 被过滤为"软要求" |
+| `IT服务方案资质认证` | ✅ 是 | ❌ 被过滤为"软要求" |
+
+这些合法的资质证书会被自动通过（auto-pass），**不会与企业资质库进行匹配验证**，可能导致企业实际缺少该资质但系统认为满足要求。
+
+**影响**：含"方案"二字的资质证书名称会被误过滤，资质门槛检查失效。
+
+**修复建议**：`_DOC_PATTERNS` 中的方案类正则应添加边界约束，排除以"资质"/"认证"/"许可"/"证书"结尾的字符串，例如：`r".*服务方案(?<!资质)(?<!认证)(?<!许可)"` 或在 `_is_generic_qual()` 中添加反向检查：如果 qual 以"资质"/"认证"/"许可"/"证书"结尾，则不视为软要求。
+
+---
+
+### N16: eligibility_checker `_CAPABILITY_PATTERNS` 和 `_INVOICE_PATTERNS` 过度宽泛 🟡
+
+- **文件**：`core/nodes/eligibility_checker.py` — `_CAPABILITY_PATTERNS`（第 129-140 行）和 `_INVOICE_PATTERNS`（第 193-201 行）
+- **严重程度**：中
+- **类型**：误报 / 过滤缺陷
+
+**问题描述**：
+
+`_CAPABILITY_PATTERNS` 中的 `"具有.*技术"` 和 `"具有.*能力"` 会匹配合法资质：
+- `具有信息技术服务资质` → 匹配 `"具有.*技术"` → **误过滤**
+- `具有质量检测能力认证` → 匹配 `"具有.*能力"` → **误过滤**
+
+`_INVOICE_PATTERNS` 中的 `"能开具"` 是纯字面匹配，会匹配任何包含这三个字的文本：
+- `能开具证明的机构资质` → 匹配 `"能开具"` → **误过滤**
+
+**已验证**（通过 python 脚本确认）。
+
+**影响**：含"具有...技术"/"具有...能力"/"能开具"的资质名称被误过滤。
+
+**修复建议**：与 N15 相同，添加反向检查或边界约束。
+
+---
+
+### N17: template_matcher bid_type 子串匹配导致"劳务管理服务类"误匹配"服务"类型 🟡
+
+- **文件**：`core/nodes/template_matcher.py` — bid_type 过滤逻辑（第 140-176 行）
+- **严重程度**：中
+- **类型**：匹配缺陷
+
+**问题描述**：
+
+bid_type 过滤使用双向子串匹配：
+
+```python
+bid_type_stripped = bid_type.replace("类", "")
+if tpl_type in bid_type_stripped or bid_type_stripped in tpl_type:
+    filtered.append((template_id, distance))
+```
+
+`TEMPLATES` 字典键为：`"服务"`, `"货物"`, `"工程"`, `"集成"`, `"运维"`, `"劳务外包"`（不带"类"）。
+
+**已验证的匹配结果**：
+
+| bid_type | stripped | tpl_type | 匹配结果 | 正确？ |
+|----------|----------|----------|---------|--------|
+| `劳务管理服务类` | `劳务管理服务` | `服务` | ✅ 匹配 | ❌ 错误！ |
+| `劳务管理服务类` | `劳务管理服务` | `劳务外包` | ❌ 不匹配 | ❌ 错误！ |
+
+"劳务管理服务类"应匹配"劳务外包"类型模板（最接近的类型），但由于子串匹配，"服务"是"劳务管理服务"的子串，导致错误匹配"服务"类型模板。
+
+**缓解因素**：`section_generator.py` 对劳务类标书跳过模板匹配（见 N21），所以此 bug 的实际影响被降低。但 `selected_template_id` 仍会被设置为错误的"服务"类型模板 ID。
+
+**影响**：`selected_template_id` 可能被设为错误类型的模板，影响调试和潜在的下游逻辑。
+
+**修复建议**：使用精确匹配（`tpl_type == bid_type_stripped`）或映射表（如 `{"劳务管理服务类": "劳务外包"}`），而非子串匹配。
+
+---
+
+### N18: feedback_form `_apply_feedback_and_regenerate` 无异常处理 🟡
+
+- **文件**：`gui/components/feedback_form.py` — `_apply_feedback_and_regenerate()` 函数（第 20-51 行）
+- **严重程度**：中
+- **类型**：异常处理缺陷
+
+**问题描述**：
+
+```python
+def _apply_feedback_and_regenerate(result: dict) -> None:
+    with st.spinner("🔄 正在应用反馈并重新生成章节..."):
+        from core.graph import build_generation_graph
+        llm_fns = st.session_state.get("pipeline_llm_fns", {})
+        generation_graph = build_generation_graph(llm_fns=llm_fns)
+        phase2_state = {**result}
+        phase2_state["review_status"] = ""
+        new_result = generation_graph.invoke(phase2_state)  # ← 无 try/except
+        st.session_state["pipeline_result"] = new_result
+    st.success("✅ 已应用反馈重新生成，请审阅更新后的内容")
+    st.rerun()
+```
+
+`generation_graph.invoke()` 可能抛出异常（LLM API 超时、网络错误、JSON 解析失败等），但未被捕获。异常会导致：
+1. Streamlit 显示原始 traceback（不友好的错误信息）
+2. `st.session_state["pipeline_result"]` 不被更新（保留旧结果）
+3. `st.rerun()` 不被执行（界面停留在 spinner 状态）
+
+同样的问题也存在于 `review_panel.py` 第 406-421 行的"驳回修改"路径。
+
+**影响**：管道异常时用户体验差，且可能丢失已提交的反馈。
+
+**修复建议**：用 `try/except` 包裹 `generation_graph.invoke()`，异常时显示友好错误信息并保留原始结果。
+
+---
+
+### N19: feedback_form `current_round` 不递增，旧反馈被重复显示为"待处理" 🟡
+
+- **文件**：`gui/components/feedback_form.py` — `render_feedback_form()` 函数（第 54-156 行）
+- **严重程度**：中
+- **类型**：逻辑缺陷
+
+**问题描述**：
+
+用户提交反馈后点击"应用反馈并重新生成"，管道执行完毕后 `current_round` **不递增**（注释说明"由 FeedbackProcessor 管理递增"）。但 `FeedbackProcessor` 仅在 `QualityChecker` 失败时才递增 `current_round`。如果质检通过，`current_round` 保持为 0。
+
+反馈条目的 `round` 字段设为 `current_round + 1 = 1`。管道执行后，`pending_feedback` 仍按 `round == current_round + 1 == 1` 过滤：
+
+```python
+pending_feedback = [
+    fb for fb in result.get("feedback_history", [])
+    if fb.get("round", 0) == current_round + 1  # current_round 仍为 0
+]
+```
+
+**结果**：已应用的旧反馈仍被显示为"本轮已提交 N 条反馈"，"应用反馈并重新生成"按钮仍可点击。用户可能重复应用同一反馈，触发不必要的 LLM 调用。
+
+此外，`max_rounds` 限制不适用于用户主动发起的重新生成路径——用户可以无限次重新生成。
+
+**影响**：反馈状态显示错误，可能导致重复生成和 LLM 调用浪费。
+
+**修复建议**：
+1. 用户主动应用反馈后，递增 `current_round` 或标记已应用反馈（如添加 `applied: True` 字段）
+2. `pending_feedback` 过滤时排除已应用的反馈
+3. 考虑对用户主动重新生成也施加 `max_rounds` 限制
+
+---
+
+### N20: req_extractor `MAX_INPUT_CHARS=30000` 可能导致小上下文模型 OOM 🟡
+
+- **文件**：`core/nodes/req_extractor.py` — 第 184 行
+- **严重程度**：中
+- **类型**：配置风险
+
+**问题描述**：
+
+```python
+MAX_INPUT_CHARS = 30000
+```
+
+注释说明"Modern LLMs (GPT-4o, Claude, etc.) handle 128K+ token context windows"，但系统支持的 LLM 包括 DeepSeek（`deepseek-chat` 上下文窗口 32K-64K tokens，但输出限制 4K-8K tokens）。30000 中文字符约 7500-15000 tokens（含 prompt 模板和 JSON 输出预留），对 DeepSeek 来说接近上下文窗口上限。
+
+如果 LLM 输入过长，可能触发：
+1. OOM（exit code 137）——正是原来 8000 限制要避免的问题
+2. 输出截断（JSON 不完整导致解析失败）
+3. API 限流/超时
+
+**影响**：使用 DeepSeek 等较小上下文模型时，大文档解析可能失败。
+
+**修复建议**：将 `MAX_INPUT_CHARS` 改为可配置参数（从配置面板读取），或按模型动态调整（如 DeepSeek 用 15000，GPT-4o 用 30000）。
+
+---
+
+### N21: section_generator 对劳务类标书完全跳过模板匹配 🟢
+
+- **文件**：`core/nodes/section_generator.py` — `_resolve_sections_from_template()` 函数（第 569-575 行）
+- **严重程度**：低
+- **类型**：死代码 / 设计折衷
+
+**问题描述**：
+
+```python
+if bid_type and ("劳务管理服务" in bid_type or "劳务外包" in bid_type):
+    return _get_sections_for_bid_type(bid_type)
+```
+
+劳务类标书始终使用 `_get_sections_for_bid_type()` 返回的固定 9 章结构，忽略模板匹配结果。即使 `TemplateMatcher` 返回了正确的模板，该模板的章节定义也不会被使用。
+
+注释说明这是因为"Template matching with MockEmbedder can select wrong-type templates"，这是一个临时解决方案。
+
+**影响**：模板匹配对劳务类标书是死计算，浪费 LLM token 和处理时间。未来如果 `MockEmbedder` 被替换为真实 embedding 模型，此 bypass 仍会阻止模板匹配生效。
+
+**修复建议**：在 N17 修复后（精确匹配 bid_type），移除此 bypass，或改为可配置开关。
+
+---
+
+### N22: template_library TEMPLATES 键名与 TEMPLATE_TYPES / upload_panel 不一致 🟢
+
+- **文件**：`core/retrieval/template_library.py` — `TEMPLATES` 字典（第 21 行）vs `core/nodes/template_matcher.py` — `TEMPLATE_TYPES`（第 27 行）
+- **严重程度**：低
+- **类型**：命名不一致（N08 部分修复后的残留）
+
+**问题描述**：
+
+N08 修复后，`upload_panel.py` 和 `TEMPLATE_TYPES` 已统一使用带"类"后缀的命名（如 `"服务类"`, `"劳务外包类"`, `"劳务管理服务类"`）。
+
+但 `template_library.py` 的 `TEMPLATES` 字典键**仍不带"类"后缀**：
+
+| 位置 | 键名 | 缺失 |
+|------|------|------|
+| `upload_panel.py` | `服务类`, `货物类`, `工程类`, `集成类`, `运维类`, `劳务管理服务类`, `劳务外包类`（7 种，带"类"） | — |
+| `TEMPLATE_TYPES` | `服务类`, `货物类`, `工程类`, `集成类`, `运维类`, `劳务外包类`, `劳务管理服务类`（7 种，带"类"） | — |
+| `TEMPLATES` 字典键 | `服务`, `货物`, `工程`, `集成`, `运维`, `劳务外包`（6 种，**不带"类"**） | **缺"劳务管理服务"** |
+
+这导致：
+1. `template_matcher.py` 的 bid_type 过滤需要 `bid_type.replace("类", "")` 来对齐 TEMPLATES 键名——这个 strip 操作正是 N17 子串匹配 bug 的根源
+2. "劳务管理服务类"在 TEMPLATES 中没有对应键，无法构建该类型的模板索引
+
+**影响**：命名不一致是 N17 的根本原因；`TEMPLATE_TYPES` 列表包含"劳务管理服务类"但实际没有对应模板。
+
+**修复建议**：将 `TEMPLATES` 字典键统一为带"类"后缀，并补充"劳务管理服务类"的模板定义（或将其映射到"劳务外包类"模板）。
+
+## 五、新 Bug 汇总
+
+| 编号 | 严重程度 | 模块 | 简述 |
+|------|---------|------|------|
+| N15 | 🔴 高 | `eligibility_checker.py` | `_DOC_PATTERNS` 方案类正则过于宽泛，合法资质证书被误过滤为"软要求" |
+| N16 | 🟡 中 | `eligibility_checker.py` | `_CAPABILITY_PATTERNS` / `_INVOICE_PATTERNS` 过度宽泛，合法资质被误过滤 |
+| N17 | 🟡 中 | `template_matcher.py` | bid_type 子串匹配导致"劳务管理服务类"误匹配"服务"类型模板 |
+| N18 | 🟡 中 | `feedback_form.py` | `_apply_feedback_and_regenerate` 无异常处理，管道异常时 UI 崩溃 |
+| N19 | 🟡 中 | `feedback_form.py` | `current_round` 不递增，旧反馈重复显示为"待处理"，用户可无限重新生成 |
+| N20 | 🟡 中 | `req_extractor.py` | `MAX_INPUT_CHARS=30000` 可能导致 DeepSeek 等小上下文模型 OOM |
+| N21 | 🟢 低 | `section_generator.py` | 劳务类标书完全跳过模板匹配（临时 bypass 变永久死代码） |
+| N22 | 🟢 低 | `template_library.py` | TEMPLATES 键名不带"类"且缺"劳务管理服务"，与 TEMPLATE_TYPES 不一致 |
+
+## 六、修复优先级建议
+
+| 优先级 | 编号 | 原因 |
+|:--:|------|------|
+| P0（立即） | N15 | 合法资质被误过滤，资质门槛检查失效，可能投标不合格项目 |
+| P1（高） | N16, N17, N19 | 资质误过滤 / 模板误匹配 / 反馈状态错误 |
+| P2（中） | N18, N20 | 异常处理缺失 / OOM 风险 |
+| P3（低） | N21, N22 | 死代码 / 命名不一致 |
+
+## 七、测试盲区分析
+
+pytest 507 全通过却未发现 N15-N22，原因：
+
+| 盲区 | 未覆盖的问题 | 原因 |
+|------|------------|------|
+| 资质过滤边界 | N15, N16 | 无测试验证合法证书名称是否被 `_is_generic_qual()` 误过滤 |
+| bid_type 匹配边界 | N17 | 无测试验证"劳务管理服务类"的模板匹配结果 |
+| GUI 异常路径 | N18 | 无测试覆盖 `generation_graph.invoke()` 抛异常时的 UI 行为 |
+| 反馈状态管理 | N19 | 无测试验证用户主动应用反馈后的 `current_round` 和 `pending_feedback` 状态 |
+| LLM 上下文限制 | N20 | 无测试验证大输入对 DeepSeek 等模型的影响 |
+| 模板匹配 bypass | N21 | 无测试验证劳务类标书是否使用模板匹配结果 |
+
+## 八、补充说明
+
+- **本轮审查基于 git diff 未提交变更**，不包括已提交但未 push 的代码。
+- **N15/N16 通过 python 脚本动态验证**，确认了 5/10 合法资质被误过滤。
+- **N17 通过 python 脚本动态验证**，确认了"劳务管理服务类"与"服务"类型的误匹配。
+- **N18-N22 为静态代码审查发现**，未动态复现，但逻辑分析确认问题存在。
+- **BUG-04/06/07/11 仍未验证**，涉及 FAISS 持久化和 evolution 模块，建议后续专项测试。

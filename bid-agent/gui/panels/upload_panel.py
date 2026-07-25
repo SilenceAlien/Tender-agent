@@ -52,22 +52,27 @@ def render_upload_panel():
             with col2:
                 st.caption(f"类型: {f.type}")
 
-    # ── 项目基本信息（用于上下文契约，保障全篇一致性）──────────────────
+    # ── 投标人名称（必填）────────────────────────────────────────────
     st.divider()
-    with st.expander("📋 项目基本信息（选填，用于全篇一致性保障）", expanded=False):
+    st.markdown("**投标人名称 *（必填）**")
+    bidder_name = st.text_input(
+        "投标人名称",
+        key="form_bidder_name",
+        help="投标公司全称，将作为「项目上下文契约」注入每章生成 prompt，确保全篇一致。此项为必填，未填写无法启动。",
+        placeholder="如：广州华南人力有限公司",
+    )
+    if not bidder_name.strip():
+        st.warning("⚠️ 投标人名称为必填项，未填写将无法启动解析。")
+
+    # ── 项目其他信息（选填，用于上下文契约，保障全篇一致性）──────────────────
+    with st.expander("📋 项目其他信息（选填，用于全篇一致性保障）", expanded=False):
         st.caption(
             "填写以下信息后，系统会将其作为「项目上下文契约」注入每章生成 prompt，"
-            "确保项目名称、投标人、项目地点等在全篇 8 章中完全一致。"
+            "确保招标人、项目地点等在全篇 8 章中完全一致。"
             "未填写的字段将由系统从招标文件和补充说明中自动提取。"
         )
         col1, col2 = st.columns(2)
         with col1:
-            st.text_input(
-                "投标人名称",
-                key="form_bidder_name",
-                help="全篇统一使用此名称，防止各章不一致",
-                placeholder="如：广州华南人力有限公司",
-            )
             st.text_input(
                 "招标人名称",
                 key="form_tenderer_name",
@@ -109,7 +114,7 @@ def render_upload_panel():
         chunk_size = st.number_input("文档分块大小", 500, 2000, 1000, 100, key="chunk_size")
     with col3:
         st.markdown("<br>", unsafe_allow_html=True)
-        start_disabled = not uploaded_files
+        start_disabled = not uploaded_files or not bidder_name.strip()
         if st.button(
             "📋 解析并提取信息",
             use_container_width=True,

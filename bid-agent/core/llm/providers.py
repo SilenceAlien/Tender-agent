@@ -82,6 +82,22 @@ def _create_moonshot(api_key: str, model: str, base_url: str | None = None, **kw
     )
 
 
+def _create_anthropic(api_key: str, model: str, base_url: str | None = None, **kwargs) -> Any:
+    """Create a ChatAnthropic instance for Claude models.
+
+    Official base URL: https://api.anthropic.com (ref: docs.anthropic.com)
+    Uses langchain-anthropic's ChatAnthropic which supports the Messages API.
+    """
+    from langchain_anthropic import ChatAnthropic
+    return ChatAnthropic(
+        api_key=api_key or "sk-placeholder",
+        model=model,
+        temperature=kwargs.get("temperature", 0.1),
+        max_tokens=kwargs.get("max_tokens", 4096),
+        **{k: v for k, v in kwargs.items() if k not in ("temperature", "max_tokens")},
+    )
+
+
 # ── Registry ───────────────────────────────────────────────────────────
 
 PROVIDER_FACTORIES = {
@@ -90,6 +106,7 @@ PROVIDER_FACTORIES = {
     "zhipu": _create_zhipu,
     "qwen": _create_qwen,
     "moonshot": _create_moonshot,
+    "anthropic": _create_anthropic,
 }
 
 

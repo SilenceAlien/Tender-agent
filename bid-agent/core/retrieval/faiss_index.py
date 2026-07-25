@@ -51,7 +51,9 @@ class VectorIndexManager:
             self._faiss_index = None
 
     def _create_faiss_index(self):
-        index = faiss.IndexHNSWFlat(self.dim, self.m)
+        # Use IndexHNSWFlat with inner product (IP) for cosine similarity
+        # Per spec: RAG must use cosine similarity, not L2
+        index = faiss.IndexHNSWFlat(self.dim, self.m, faiss.METRIC_INNER_PRODUCT)
         index.hnsw.efConstruction = 200
         return index
 
@@ -77,9 +79,12 @@ class VectorIndexManager:
             raise ValueError(f"Vector dim {vectors.shape[1]} != index dim {self.dim}")
 
         if _HAS_FAISS and self._faiss_index is not None:
-            self._faiss_index.add(vectors)
-            # BUG-04 fix: keep a numpy copy in sync even in FAISS mode so that
-            # save() persists real vectors and load() can rebuild the index.
+            # Normalize vectors for cosine similarity via inner product
+            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+            norms = np.maximum(norms, 1e-10)
+            vectors_normalized = vectors / norms
+            self._faiss_index.add(vectors_normalized)
+            # Keep numpy copy of ORIGINAL vectors for persistence/rebuild
             if self._vectors is None:
                 self._vectors = vectors.copy()
             else:
@@ -117,7 +122,10 @@ class VectorIndexManager:
                 for new_idx, old_idx in enumerate(keep_indices):
                     self._faiss_index.reconstruct(old_idx, new_vectors[new_idx])
             self._faiss_index = self._create_faiss_index()
-            self._faiss_index.add(new_vectors)
+            # Normalize vectors for cosine similarity via inner product
+            norms = np.linalg.norm(new_vectors, axis=1, keepdims=True)
+            norms = np.maximum(norms, 1e-10)
+            self._faiss_index.add(new_vectors / norms)
             self._vectors = new_vectors
         else:
             self._vectors = self._vectors[keep_indices]
@@ -137,14 +145,20 @@ class VectorIndexManager:
         if self._vectors is None or len(self._vectors) == 0:
             return [[] for _ in range(len(query))]
 
-        # Compute pairwise L2 distances
-        # dist[i,j] = ||Q[i] - V[j]||^2
-        # = Q[i]·Q[i] + V[j]·V[j] - 2Q[i]·V[j]
-        q_norms = np.sum(query ** 2, axis=1, keepdims=True)  # (N, 1)
-        v_norms = np.sum(self._vectors ** 2, axis=1)          # (M,)
-        dots = query @ self._vectors.T                         # (N, M)
-        dists = q_norms + v_norms - 2 * dots
-        dists = np.maximum(dists, 0.0)  # clip negative due to float imprecision
+        # Compute cosine similarities (higher = more similar)
+        # Normalize vectors first to unit L2 norm
+        if np.any(np.linalg.norm(query, axis=1, keepdims=True) == 0):
+            # Handle zero vectors
+            similarities = np.zeros((len(query), len(self._vectors)))
+        elif np.any(np.linalg.norm(self._vectors, axis=1) == 0):
+            similarities = np.zeros((len(query), len(self._vectors)))
+        else:
+            q_norm = query / np.linalg.norm(query, axis=1, keepdims=True)
+            v_norm = self._vectors / np.linalg.norm(self._vectors, axis=1, keepdims=True)
+            similarities = q_norm @ v_norm.T  # Shape: (N, M), range [-1, 1]
+
+        # Convert similarity to distance: distance = 1 - similarity (range [0, 2])
+        dists = 1.0 - similarities
 
         # Get top-k smallest distances per query
         effective_k = min(k, len(self._ids))
@@ -175,7 +189,11 @@ class VectorIndexManager:
             return [[] for _ in range(len(query_vectors))]
 
         if _HAS_FAISS and self._faiss_index is not None:
-            distances, indices = self._faiss_index.search(query_vectors, k)
+            # Normalize query for cosine similarity via inner product
+            norms = np.linalg.norm(query_vectors, axis=1, keepdims=True)
+            norms = np.maximum(norms, 1e-10)
+            query_normalized = query_vectors / norms
+            distances, indices = self._faiss_index.search(query_normalized, k)
             results: list[list[tuple[str, float]]] = []
             for i in range(len(query_vectors)):
                 row: list[tuple[str, float]] = []
@@ -183,7 +201,9 @@ class VectorIndexManager:
                     idx = indices[i][j]
                     if idx == -1:
                         break
-                    row.append((self._ids[idx], float(distances[i][j])))
+                    # FAISS returns inner product = cosine sim (both normalized)
+                    # Convert to distance: 1 - cosine_sim
+                    row.append((self._ids[idx], float(1.0 - distances[i][j])))
                 results.append(row)
             return results
 
@@ -228,10 +248,11 @@ class VectorIndexManager:
         mgr._ids = ids
         if len(vectors) > 0:
             mgr._vectors = vectors.astype(np.float32)
-            # BUG-04 fix: rebuild FAISS index from loaded vectors so that
-            # search works after save → load.
+            # Rebuild FAISS index from loaded vectors (normalized for IP/cosine)
             if _HAS_FAISS and mgr._faiss_index is not None:
-                mgr._faiss_index.add(mgr._vectors)
+                norms = np.linalg.norm(mgr._vectors, axis=1, keepdims=True)
+                norms = np.maximum(norms, 1e-10)
+                mgr._faiss_index.add(mgr._vectors / norms)
 
         logger.info(f"Loaded index ({len(ids)} vectors) from {path}")
         return mgr

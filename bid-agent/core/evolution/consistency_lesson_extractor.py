@@ -55,6 +55,21 @@ _RULE_TEMPLATES: dict[str, dict[str, Any]] = {
         "keywords": ["文件组成", "投标函", "声明", "分项报价表", "偏差表", "资格审查"],
         "directive": "投标函声明的文件组成清单中每一项必须有对应的实际章节。",
     },
+    "tech_parameter_mismatch": {
+        "title_template": "跨章节技术参数不一致：{detail}",
+        "rule": "技术参数（响应时间、服务时间、到达现场、故障恢复、保修期等）在不同章节中"
+                "必须保持一致。技术方案章与服务方案章的技术参数值必须完全相同。",
+        "keywords": ["技术参数", "响应时间", "服务时间", "到达现场", "故障恢复", "保修期", "不一致"],
+        "directive": "生成各章节时须交叉核对技术参数（响应时间、服务时间等），确保全文一致。",
+    },
+    "contract_deviation": {
+        "title_template": "契约偏离/拼凑残留：{detail}",
+        "rule": "章节内容中不得出现项目上下文契约禁止的机构名或行业属性。"
+                "拼凑残留（其他项目的机构名/行业属性错误出现）会导致废标，"
+                "生成时必须严格检查是否包含契约禁止项。",
+        "keywords": ["契约偏离", "拼凑残留", "禁止机构", "禁止行业", "机构名", "行业属性"],
+        "directive": "生成各章节时须严格检查是否包含契约禁止的机构名和行业属性，发现则删除。",
+    },
     "format_violation": {
         "title_template": "格式合规问题：{detail}",
         "rule": "标书格式必须符合招标文件要求，包括字体、字号、页边距、装订方式等。",
@@ -181,6 +196,12 @@ class ConsistencyLessonExtractor:
         # 互斥方式相关
         if any(kw in detail for kw in ["互斥", "保函", "转账", "电汇", "包干", "单价"]):
             return "mutual_exclusion"
+        # 技术参数相关
+        if any(kw in detail for kw in ["技术参数", "响应时间", "服务时间", "到达现场", "故障恢复", "保修期"]):
+            return "tech_parameter_mismatch"
+        # 契约偏离/拼凑残留
+        if any(kw in detail for kw in ["契约", "禁止机构", "拼凑", "残留", "禁止行业"]):
+            return "contract_deviation"
         # 默认：通用一致性
         return "mutual_exclusion"
 
@@ -195,12 +216,20 @@ class ConsistencyLessonExtractor:
 
     @staticmethod
     def _map_cross_ref_type(cross_ref_type: str) -> str:
-        """将 CrossReferenceChecker 的 type 映射到经验 issue_type。"""
+        """将 CrossReferenceChecker 的 type 映射到经验 issue_type。
+
+        H11 fix: 补全 tech_parameter_mismatch / contract_forbidden_institution /
+        contract_forbidden_industry 三类映射，之前全部 fallback 到 mutual_exclusion，
+        导致 CRITICAL 级契约偏离被错归为互斥问题。
+        """
         mapping = {
             "number_mismatch": "number_mismatch",
             "amount_mismatch": "amount_mismatch",
             "date_mismatch": "date_mismatch",
+            "tech_parameter_mismatch": "tech_parameter_mismatch",
             "document_composition_mismatch": "document_composition_mismatch",
+            "contract_forbidden_institution": "contract_deviation",
+            "contract_forbidden_industry": "contract_deviation",
         }
         return mapping.get(cross_ref_type, "mutual_exclusion")
 

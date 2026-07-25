@@ -6,7 +6,7 @@ Contract (from node_interfaces.md):
     Output: {export_path: str, node_status: {...}}
     Constraints:
     - T019: Merge all sections, inject format template (headings, fonts, TOC)
-    - T020: Apply page margins (上3.7/下3.5/左2.8/右2.6cm), line spacing 28pt,
+    - T020: Apply page margins (上3.7/下3.7/左2.8/右2.8cm), line spacing 28pt,
             first-line indent 2 chars
     - Export to data/exports/{project_id}_标书_v{round}.docx
 """
@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 # ── Format defaults (政府采购标准) ─────────────────────────────────────
 
 DEFAULT_FORMAT = {
-    "page_margin": "上3.7cm/下3.5cm/左2.8cm/右2.6cm",
+    # M8 fix: aligned bottom/right defaults with spec (上下3.7cm/左右2.8cm)
+    "page_margin": "上3.7cm/下3.7cm/左2.8cm/右2.8cm",
     "font": "正文仿宋_GB2312",
     "line_spacing": "28磅",
     "title_levels": [],
@@ -37,12 +38,12 @@ DEFAULT_FORMAT = {
 def _format_margin(format_rules: dict) -> dict[str, float]:
     """Parse margin string into cm values.
 
-    Format: "上3.7cm/下3.5cm/左2.8cm/右2.6cm"
+    Format: "上3.7cm/下3.7cm/左2.8cm/右2.8cm"
     """
     import re
 
     margin_str = format_rules.get("page_margin", DEFAULT_FORMAT["page_margin"])
-    margins: dict[str, float] = {"top": 3.7, "bottom": 3.5, "left": 2.8, "right": 2.6}
+    margins: dict[str, float] = {"top": 3.7, "bottom": 3.7, "left": 2.8, "right": 2.8}
 
     patterns = {
         "top": re.compile(r"上\s*(\d+\.?\d*)\s*cm"),
@@ -257,6 +258,10 @@ def _mermaid_to_text_diagram(mermaid_code: str) -> list[str]:
         # No edges parsed → just output the raw mermaid as a code block
         return ["[图表代码]", mermaid_code.strip()]
 
+    # H7 note: this is a tree layout (fallback), not the force-directed graph
+    # required by the spec. If PNG rendering fails, this text fallback is used.
+    lines.append("（树形图 fallback：规范要求力导向布局，将在图片渲染失败时使用文本树图）")
+
     # Find root nodes (nodes that never appear as a target)
     targets = {t for _, t, _ in edges}
     roots = [n for n in node_labels if n not in targets]
@@ -326,6 +331,133 @@ def _mermaid_to_png(mermaid_code: str, output_path: str) -> str | None:
     return None
 
 
+def _force_directed_layout(
+    node_labels: dict[str, str],
+    edges: list[tuple[str, str, str]],
+    iterations: int = 400,
+) -> dict[str, tuple[float, float]]:
+    """Compute node positions via a force-directed (spring) simulation.
+
+    Implements a Fruchterman–Reingold style layout: nodes repel each other
+    while edges act as springs attracting connected nodes. Iterated with a
+    cooling temperature. Returns normalised continuous positions keyed by
+    node id — this satisfies spec ⑭ ("力导向算法计算节点位置").
+    """
+    import math
+    import random
+
+    nodes = list(node_labels.keys())
+    if not nodes:
+        return {}
+    if len(nodes) == 1:
+        return {nodes[0]: (0.0, 0.0)}
+
+    random.seed(7)
+    pos = {nd: [random.uniform(-1.0, 1.0), random.uniform(-1.0, 1.0)] for nd in nodes}
+
+    area = float(len(nodes))
+    k = math.sqrt(area) * 1.2       # ideal edge length
+    temperature = k * 2.0
+    t_min = k * 0.02
+    cooling = 0.97
+
+    for _ in range(iterations):
+        disp: dict[str, list[float]] = {nd: [0.0, 0.0] for nd in nodes}
+        # Repulsive force between every pair of nodes
+        for i in range(len(nodes)):
+            a = nodes[i]
+            for j in range(len(nodes)):
+                if i == j:
+                    continue
+                b = nodes[j]
+                dx = pos[a][0] - pos[b][0]
+                dy = pos[a][1] - pos[b][1]
+                dist = math.hypot(dx, dy)
+                if dist < 1e-4:
+                    dx = random.uniform(-0.1, 0.1)
+                    dy = random.uniform(-0.1, 0.1)
+                    dist = math.hypot(dx, dy) or 1e-4
+                rep = (k * k) / dist
+                disp[a][0] += (dx / dist) * rep
+                disp[a][1] += (dy / dist) * rep
+        # Attractive force along edges
+        for s, t, _ in edges:
+            if s not in pos or t not in pos:
+                continue
+            dx = pos[s][0] - pos[t][0]
+            dy = pos[s][1] - pos[t][1]
+            dist = math.hypot(dx, dy) or 1e-4
+            att = (dist * dist) / k
+            disp[s][0] -= (dx / dist) * att
+            disp[s][1] -= (dy / dist) * att
+            disp[t][0] += (dx / dist) * att
+            disp[t][1] += (dy / dist) * att
+        # Apply displacement, capped by current temperature
+        for nd in nodes:
+            d = math.hypot(disp[nd][0], disp[nd][1]) or 1e-4
+            limit = min(d, temperature)
+            pos[nd][0] += (disp[nd][0] / d) * limit
+            pos[nd][1] += (disp[nd][1] / d) * limit
+        temperature = max(t_min, temperature * cooling)
+
+    # Normalise into a consistent coordinate span (independent of simulation
+    # scale) so the downstream scaling/figure-size logic behaves as before.
+    xs = [p[0] for p in pos.values()]
+    ys = [p[1] for p in pos.values()]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    span = max(1.0, float(len(nodes)) * 0.8)
+
+    def _n(val: float, lo: float, hi: float) -> float:
+        return (val - lo) / (hi - lo if hi > lo else 1.0) * span
+
+    return {nd: (_n(pos[nd][0], minx, maxx), _n(pos[nd][1], miny, maxy)) for nd in nodes}
+
+
+def _add_field(paragraph, field_code: str, default_text: str = "1"):
+    """Insert a Word field (e.g. ``PAGE`` / ``PAGEREF``) into a paragraph.
+
+    The field shows ``default_text`` until Word updates fields (on open the
+    user is prompted to update, or it updates automatically).
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = field_code
+    separate = OxmlElement("w:fldChar")
+    separate.set(qn("w:fldCharType"), "separate")
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+
+    r1 = paragraph.add_run()
+    r1._r.append(begin)
+    r1._r.append(instr)
+    r1._r.append(separate)
+    r2 = paragraph.add_run(default_text)
+    r2._r.append(end)
+    return r1
+
+
+def _add_bookmark(paragraph, name: str) -> None:
+    """Wrap the paragraph content in a bookmark (bookmarkStart ... bookmarkEnd)."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    bm_id = str(id(paragraph))
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), bm_id)
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), bm_id)
+    p = paragraph._p
+    p.insert(0, start)
+    p.append(end)
+
+
 def _mermaid_to_png_matplotlib(mermaid_code: str, output_path: str) -> str | None:
     """Render Mermaid flowchart as PNG using matplotlib."""
     try:
@@ -363,51 +495,11 @@ def _mermaid_to_png_matplotlib(mermaid_code: str, output_path: str) -> str | Non
         if not edges:
             return None
 
-        # ── Build adjacency list and find roots ──
-        children: dict[str, list[str]] = {}
-        for src, tgt, _ in edges:
-            children.setdefault(src, []).append(tgt)
-
-        targets = {t for _, t, _ in edges}
-        roots = [n for n in node_labels if n not in targets]
-        if not roots:
-            roots = [list(node_labels.keys())[0]]
-
-        # ── Tree layout algorithm ──
-        # Assign x positions to leaves sequentially, internal nodes are
-        # centred above their children.  y = -depth for top-down.
-        positions: dict[str, tuple[float, float]] = {}
-        visited: set[str] = set()
-        leaf_x = [0.0]
-
-        def _assign(node: str, depth: int) -> float:
-            if node in visited:
-                return positions[node][0]
-            visited.add(node)
-
-            kids = children.get(node, [])
-            # Filter out already-visited kids to prevent cycles
-            unvisited_kids = [k for k in kids if k not in visited]
-
-            if not unvisited_kids:
-                x = leaf_x[0]
-                leaf_x[0] += 1.0
-                positions[node] = (x, float(-depth))
-                return x
-
-            child_xs = [_assign(k, depth + 1) for k in unvisited_kids]
-            x = sum(child_xs) / len(child_xs)
-            positions[node] = (x, float(-depth))
-            return x
-
-        for root in roots:
-            _assign(root, 0)
-
-        # Place any remaining isolated nodes
-        for node_id in node_labels:
-            if node_id not in positions:
-                positions[node_id] = (leaf_x[0], 0.0)
-                leaf_x[0] += 1.0
+        # ── Force-directed (spring) layout algorithm (H7/N1) ──
+        # Replaces the old hierarchical tree layout: node positions are
+        # computed by a force-directed simulation (repulsion + spring
+        # attraction) per spec ⑭ ("力导向算法计算节点位置").
+        positions = _force_directed_layout(node_labels, edges)
 
         # ── Calculate box sizes with label wrapping ──
         # Wrap long labels to keep boxes compact and prevent overlap.
@@ -618,43 +710,8 @@ def _mermaid_to_png_pillow(mermaid_code: str, output_path: str) -> str | None:
         if not edges:
             return None
 
-        # ── Build adjacency list and find roots ──
-        children: dict[str, list[str]] = {}
-        for src, tgt, _ in edges:
-            children.setdefault(src, []).append(tgt)
-
-        targets = {t for _, t, _ in edges}
-        roots = [n for n in node_labels if n not in targets]
-        if not roots:
-            roots = [list(node_labels.keys())[0]]
-
-        # ── Tree layout ──
-        positions: dict[str, tuple[float, float]] = {}
-        visited: set[str] = set()
-        leaf_x = [0.0]
-
-        def _assign(node: str, depth: int) -> float:
-            if node in visited:
-                return positions[node][0]
-            visited.add(node)
-            kids = children.get(node, [])
-            unvisited_kids = [k for k in kids if k not in visited]
-            if not unvisited_kids:
-                x = leaf_x[0]
-                leaf_x[0] += 1.0
-                positions[node] = (x, float(-depth))
-                return x
-            child_xs = [_assign(k, depth + 1) for k in unvisited_kids]
-            x = sum(child_xs) / len(child_xs)
-            positions[node] = (x, float(-depth))
-            return x
-
-        for root in roots:
-            _assign(root, 0)
-        for node_id in node_labels:
-            if node_id not in positions:
-                positions[node_id] = (leaf_x[0], 0.0)
-                leaf_x[0] += 1.0
+        # ── Force-directed (spring) layout algorithm (H7/N1) ──
+        positions = _force_directed_layout(node_labels, edges)
 
         # ── Font setup ──
         font_size = 16
@@ -1104,13 +1161,35 @@ def _build_docx(
 
     doc = Document()
 
-    # ── Page setup ──────────────────────────────────────────────────────
+    # ── Page setup with header/footer placeholder ────────────────────────
     margins = _format_margin(format_rules)
     for section in doc.sections:
         section.top_margin = Cm(margins["top"])
         section.bottom_margin = Cm(margins["bottom"])
         section.left_margin = Cm(margins["left"])
         section.right_margin = Cm(margins["right"])
+        # H7: header/footer customisation from format_rules
+        header_text = format_rules.get("header")
+        footer_text = format_rules.get("footer")
+        if header_text:
+            hpara = (
+                section.header.paragraphs[0]
+                if section.header.paragraphs
+                else section.header.add_paragraph()
+            )
+            hrun = hpara.add_run(header_text)
+            hrun.font.size = Pt(10.5)
+        # Footer: optional custom text + continuous PAGE field (H7)
+        fpara = (
+            section.footer.paragraphs[0]
+            if section.footer.paragraphs
+            else section.footer.add_paragraph()
+        )
+        fpara.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if footer_text:
+            frun = fpara.add_run(footer_text + "  ")
+            frun.font.size = Pt(10.5)
+        _add_field(fpara, "PAGE", "1")
 
     # ── Default font ────────────────────────────────────────────────────
     style = doc.styles["Normal"]
@@ -1180,14 +1259,20 @@ def _build_docx(
     # Usable page width for right-aligned tab stop (A4 = 21cm)
     usable_width_cm = 21.0 - margins["left"] - margins["right"]
 
+    # Build TOC lines; real page numbers via PAGEREF fields pointing at
+    # bookmarks placed on each section heading (H7/N2: no hardcoded pages).
+    toc_bookmarks: list[str] = []
     for i, section_name in enumerate(sections.keys(), 1):
         toc_line = doc.add_paragraph()
         # Right-aligned tab stop with dotted leader at the right margin
         toc_line.paragraph_format.tab_stops.add_tab_stop(
             Cm(usable_width_cm), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS
         )
-        toc_run = toc_line.add_run(f"{section_name}\t第{i}页")
+        bm_name = f"_bidsect_{i}"
+        toc_run = toc_line.add_run(f"{section_name}\t")
         toc_run.font.size = Pt(12)
+        _add_field(toc_line, f"PAGEREF {bm_name} \\h", "1")
+        toc_bookmarks.append(bm_name)
 
     doc.add_page_break()
 
@@ -1199,7 +1284,7 @@ def _build_docx(
     _diagram_img_dir = tempfile.mkdtemp(prefix="bid_diagram_")
     _diagram_counter = 0
 
-    for section_name, content in sections.items():
+    for sec_idx, (section_name, content) in enumerate(sections.items(), 1):
         # Determine heading font from format rules
         if title_levels and len(title_levels) > 0:
             heading_font = title_levels[0] if len(title_levels) > 0 else "黑体"
@@ -1212,12 +1297,15 @@ def _build_docx(
         heading_run.font.size = Pt(16)
         heading_run.font.name = heading_font
         heading_run.bold = True
+        # Bookmark for TOC PAGEREF (H7/N2: real page numbers)
+        if sec_idx - 1 < len(toc_bookmarks):
+            _add_bookmark(heading_para, toc_bookmarks[sec_idx - 1])
 
         # Section body — split by lines, then split each line by
         # 【待填写：...】 placeholders so they can be styled red+bold.
         # Mermaid code blocks (```mermaid ... ```) are converted to
         # text-based tree diagrams for DOCX output.
-        placeholder_re = re.compile(r"(【待填写[^】]*】)")
+        placeholder_re = re.compile(r"(【待填写[：:][^】]+】)")
         mermaid_block_re = re.compile(
             r"```mermaid\s*\n([\s\S]*?)```", re.MULTILINE
         )
@@ -1462,10 +1550,29 @@ def doc_assembler(
         export_dir = str(project_root / "data" / "exports")
     Path(export_dir).mkdir(parents=True, exist_ok=True)
 
-    # Filename: {timestamp}_标书_v{round}.docx
+    # M9/N3 fix: filename = {project_id}_标书_v{round}.docx
+    # project_id falls back through available fields (no timestamp fallback).
     current_round = state.get("current_round", 0)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_标书_v{current_round}.docx"
+    requirements = state.get("requirements", {})
+    project_contract = state.get("project_contract", {})
+    project_id = (
+        project_contract.get("project_id", "")
+        or requirements.get("bid_number", "")
+        or project_contract.get("bidder_name", "")
+        or project_contract.get("project_location", "")
+        or "标书"
+    )
+    round_num = max(1, int(current_round))
+    # Sanitize for a legal filename
+    safe_id = re.sub(r'[^\w\u4e00-\u9fff\-]', '_', str(project_id)).strip('_')[:50]
+    if not safe_id:
+        safe_id = "标书"
+    # F1 fix: avoid duplicating "标书" when safe_id is the fallback value.
+    # Previously: safe_id="标书" → "标书_标书_v1.docx" (cosmetic bug).
+    if safe_id == "标书":
+        filename = f"标书_v{round_num}.docx"
+    else:
+        filename = f"{safe_id}_标书_v{round_num}.docx"
     export_path = str(Path(export_dir) / filename)
 
     try:

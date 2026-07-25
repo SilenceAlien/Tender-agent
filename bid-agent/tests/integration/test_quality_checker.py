@@ -36,6 +36,7 @@ def state_all_pass():
             ],
         },
         sections=sections,
+        min_section_chars=0,  # Disable 8000-char threshold for tests
     )
 
 
@@ -53,6 +54,7 @@ def state_with_issues():
             "第一章": "这是第一章内容。这是最好的方案。",  # "最" banned
             "第二章": "短",  # Too short
         },
+        min_section_chars=0,  # Disable 8000-char threshold for tests
     )
 
 

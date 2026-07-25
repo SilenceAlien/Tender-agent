@@ -6,6 +6,28 @@ Tables:
     sections   — Chapter version chain
     feedbacks  — Feedback history
     configs    — User configuration key-value store
+
+⚠──────────────────────────────────────────────────────────────────────
+【运行时接入状态 — L8（低危）】
+本模块目前 **未接入运行时**，仅被 `tests/unit/test_database.py` 引用。
+运行时实际持久化方案：
+  · 用户配置 / API Key → `core/config_persistence.py`（文件 JSON，位于 ~/.bid-agent/config.json）
+  · metrics / prompt 演化 → 各自独立 `_init_db()`（core/evolution/metrics_tracker.py、prompt_registry.py）
+跨会话的 pipeline 运行记录、企业资质库缓存等能力本模块已具备 API，但运行时
+尚未建立「project」生命周期来消费它。
+
+【若需接入，建议方式】
+1. 在运行时入口（如 gui/pipeline_runner 或 graph 完成回调）以「可选、失败不抛」的
+   方式调用 create_project / save_agent_state，将一次运行快照写入 projects 表；
+   必须 try/except 包裹，DB 异常绝不可中断主流程。
+2. 若希望统一管理，可将 metrics_tracker / prompt_registry 的 `_init_db()` 改造为
+   复用本模块的 init_db + 连接；但属较大重构（>20 行），需单独评估，不在本次范围。
+
+【禁止事项】
+· 不得把 config_persistence 的 API Key 回退/迁移到本数据库（会改变安全模型，Key 落库）。
+· 不得要求运行时强制依赖外部 DB 服务；本模块仅用本地 SQLite 文件，属内嵌存储。
+· schema 以 CREATE TABLE IF NOT EXISTS 幂等创建，无需迁移；新增列需评估兼容性。
+──────────────────────────────────────────────────────────────────────⚠
 """
 
 import json

@@ -26,12 +26,15 @@ _FIELDS = [
     ("duration", "工期/服务期", False),
     ("warranty", "质保期", False),
     ("service_target", "服务对象", False),
+    # H6 fix: align with backend _VERIFICATION_FIELDS which includes bid_subtype
+    ("bid_subtype", "劳务外包子类型", False),
 ]
 
 # 来源标签颜色映射
 _SOURCE_COLORS = {
     "用户填写": "blue",
     "招标文件": "green",
+    "LLM": "purple",  # M17 fix: add LLM source color
     "补充说明": "orange",
     "缺失": "red",
 }
@@ -123,6 +126,15 @@ def render_info_verification(extraction_result: dict) -> dict | None:
             f"⚠️ 以下必填字段为空：{', '.join(missing_required)}。"
             f"请填写后再确认。"
         )
+
+    # ── 子类型冷启动状态提示 ──────────────────────────────────────────
+    subtype_status = info_summary.get("subtype_status", "")
+    subtype_hint = info_summary.get("subtype_hint", "")
+    if subtype_status and subtype_hint:
+        if subtype_status == "cold_start":
+            st.warning(f"❄️ {subtype_hint}")
+        elif subtype_status == "data_insufficient":
+            st.info(f"📊 {subtype_hint}")
 
     st.divider()
 

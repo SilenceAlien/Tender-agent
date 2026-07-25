@@ -130,6 +130,110 @@ def _build_form_fields() -> dict:
     return fields
 
 
+def _build_feedback_loop_graph(llm_fns=None, search_fn=None):
+    """M15 fix: 最小反馈回路 — rejected → ⑨ FeedbackProcessor → ⑦ SectionGenerator.
+
+    跳过 EligibilityChecker / TemplateMatcher 前置阶段（规范 §七 最小回路：
+    ⑨→⑦），但仍保留 SectionGenerator 之后的校验链
+    (QualityChecker → CrossReferenceChecker → ComplianceChecker →
+    ScoreSimulator → HumanReviewGate)，以便重新评审核对。
+
+    复用 core.graph 的条件路由函数，因此「rejected+超轮 → 强制装配(⑭)」
+    的规范行为自然保留，且不会重跑已确认的前置阶段（避免丢失用户确认信息）。
+    """
+    import functools
+    from langgraph.graph import END, StateGraph
+
+    from core.state import AgentState
+    from core.graph import (
+        build_default_search_fn,
+        route_after_feedback,
+        route_after_quality_check,
+        route_after_cross_ref,
+        route_after_compliance,
+        route_after_review,
+    )
+    from core.nodes.section_generator import generate_all_sections_parallel as section_generator
+    from core.nodes.quality_checker import quality_checker
+    from core.nodes.feedback_processor import feedback_processor
+    from core.nodes.cross_reference_checker import cross_reference_checker
+    from core.nodes.compliance_checker import compliance_checker
+    from core.nodes.score_simulator import score_simulator
+    from core.nodes.human_review_gate import human_review_gate
+    from core.nodes.doc_assembler import doc_assembler
+
+    llm_fns = llm_fns or {}
+    if search_fn is None:
+        search_fn = build_default_search_fn()
+
+    def _bind(node_name, fn):
+        if node_name in llm_fns and llm_fns[node_name] is not None:
+            return functools.partial(fn, llm_fn=llm_fns[node_name])
+        return fn
+
+    graph = StateGraph(AgentState)
+    # 仅注册反馈回路所需节点 —— 不含 EligibilityChecker / TemplateMatcher
+    graph.add_node("FeedbackProcessor", _bind("FeedbackProcessor", feedback_processor))
+    graph.add_node("SectionGenerator", _bind("SectionGenerator", section_generator))
+    graph.add_node("QualityChecker", _bind("QualityChecker", quality_checker))
+    graph.add_node("CrossReferenceChecker", cross_reference_checker)
+    graph.add_node("ComplianceChecker", compliance_checker)
+    graph.add_node("ScoreSimulator", _bind("ScoreSimulator", score_simulator))
+    graph.add_node("HumanReviewGate", human_review_gate)
+    graph.add_node("DocumentAssembler", doc_assembler)
+
+    # ⑨ FeedbackProcessor → ⑦ SectionGenerator（定向修订）
+    graph.add_conditional_edges(
+        "FeedbackProcessor",
+        route_after_feedback,
+        {"SectionGenerator": "SectionGenerator"},
+    )
+    graph.add_edge("SectionGenerator", "QualityChecker")
+
+    # 保留校验链回到人工审核门
+    graph.add_conditional_edges(
+        "QualityChecker",
+        route_after_quality_check,
+        {
+            "CrossReferenceChecker": "CrossReferenceChecker",
+            "FeedbackProcessor": "FeedbackProcessor",
+        },
+    )
+    graph.add_conditional_edges(
+        "CrossReferenceChecker",
+        route_after_cross_ref,
+        {
+            "ComplianceChecker": "ComplianceChecker",
+            "FeedbackProcessor": "FeedbackProcessor",
+        },
+    )
+    graph.add_conditional_edges(
+        "ComplianceChecker",
+        route_after_compliance,
+        {
+            "ScoreSimulator": "ScoreSimulator",
+            "FeedbackProcessor": "FeedbackProcessor",
+        },
+    )
+    graph.add_edge("ScoreSimulator", "HumanReviewGate")
+    # rejected+超轮 → DocumentAssembler (⑭)；rejected+未超轮 → FeedbackProcessor
+    # pending → END（暂停等待下一轮人工审核）
+    graph.add_conditional_edges(
+        "HumanReviewGate",
+        route_after_review,
+        {
+            "DocumentAssembler": "DocumentAssembler",
+            "FeedbackProcessor": "FeedbackProcessor",
+            "__end__": END,
+        },
+    )
+    graph.add_edge("DocumentAssembler", END)
+
+    # 最小回路入口：从反馈处理开始，绝不重跑 EligibilityChecker
+    graph.set_entry_point("FeedbackProcessor")
+    return graph.compile()
+
+
 def render_review_panel():
     st.subheader("📝 生成与审阅")
 
@@ -257,6 +361,17 @@ def render_review_panel():
     if not sections:
         st.warning("尚未生成任何章节")
         return
+
+    # ── Check for failed sections ─────────────────────────────────────
+    failed_sections = []
+    for name, content in sections.items():
+        if not content or not content.strip() or "生成失败" in content:
+            failed_sections.append(name)
+    if failed_sections:
+        st.error(
+            f"❌ 以下 {len(failed_sections)} 个章节生成失败：{', '.join(failed_sections)}\n"
+            f"请查看日志文件：~/.bid-agent/logs/bid-agent.log"
+        )
 
     # Sort sections by defined order (defensive — section_generator already
     # returns ordered dicts, but user edits may have reshuffled them)
@@ -391,19 +506,18 @@ def render_review_panel():
                             st.session_state["pipeline_result"] = result
                             st.session_state["show_reject_form"] = False
 
-                            # Re-invoke generation graph to trigger feedback loop
+                            # M15 fix: 走最小反馈回路 (⑨ FeedbackProcessor → ⑦
+                            # SectionGenerator)，而非从 EligibilityChecker 重跑整段
+                            # Phase2。复用 graph 条件路由，保留 rejected+超轮→装配。
                             with st.spinner("🔄 正在根据审核意见重新生成..."):
-                                from core.graph import build_generation_graph
-
                                 llm_fns = st.session_state.get("pipeline_llm_fns", {})
-                                generation_graph = build_generation_graph(llm_fns=llm_fns)
+                                feedback_graph = _build_feedback_loop_graph(llm_fns=llm_fns)
                                 phase2_state = {**result}
                                 # Clear review_status so HumanReviewGate returns
-                                # "pending" after revision, not "rejected" again.
-                                # If we don't clear it, HumanReviewGate sees the
-                                # stale "rejected" verdict and loops until max_rounds.
+                                # "pending" after one revision pass, not "rejected"
+                                # again (avoids looping until max_rounds).
                                 phase2_state["review_status"] = ""
-                                new_result = generation_graph.invoke(phase2_state)
+                                new_result = feedback_graph.invoke(phase2_state)
                                 st.session_state["pipeline_result"] = new_result
 
                             st.success("✅ 已根据审核意见重新生成，请审阅更新后的内容")

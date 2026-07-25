@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_NODE_MODELS = {
     "ReqExtractor": {"provider": "deepseek", "model": "deepseek-chat"},
     "SectionGenerator": {"provider": "deepseek", "model": "deepseek-chat"},
-    "QualityChecker": {"provider": "openai", "model": "gpt-4o-mini"},
+    # M16 fix: aligned with spec — default to DeepSeek, not openai/gpt-4o-mini
+    "QualityChecker": {"provider": "deepseek", "model": "deepseek-chat"},
     "FeedbackProcessor": {"provider": "deepseek", "model": "deepseek-chat"},
 }
 

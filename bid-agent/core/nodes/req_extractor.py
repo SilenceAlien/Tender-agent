@@ -177,11 +177,18 @@ def _validate_requirements(raw: dict) -> dict:
     return result
 
 
-# ── Input size guard (Phase B5) ────────────────────────────────────────
-# Large PDFs (e.g. the 9.7MB 集成类 tender) can produce >100k chars of text,
-# which causes LLM OOM (exit code 137, see progress.md).  Cap the combined
-# input to keep it within a safe context window.
-MAX_INPUT_CHARS = 8000
+# ── Input size guard (Phase B5, F4 fix) ────────────────────────────────
+# Large PDFs (e.g. the 9.7MB 集成类 tender) can produce >100k chars of text.
+#
+# F4 fix: Instead of hard-truncating to 30k (which silently discarded 68%+
+# of large tender documents), we now split into chunks of MAX_INPUT_CHARS
+# each and call the LLM for every chunk, then merge results with
+# deduplication.  This preserves all content while staying within each
+# LLM call's context window.
+#
+# 30000 chars (~7500 tokens Chinese) is a safe per-chunk size that covers
+# most content while leaving room for the prompt template and JSON output.
+MAX_INPUT_CHARS = 30000
 
 
 # ── LLM Call (injectable for testing) ──────────────────────────────────
@@ -212,6 +219,117 @@ def _call_llm_for_extraction(
     prompt = _REQ_EXTRACTION_PROMPT.format(content=content)
     response = llm_fn(prompt)
     return _extract_json_from_response(response)
+
+
+# ── F4 fix: Chunked extraction for large documents ─────────────────────
+
+
+def _split_into_chunks(text: str, chunk_size: int = MAX_INPUT_CHARS) -> list[str]:
+    """Split text into chunks of approximately ``chunk_size`` characters.
+
+    Tries to break at newline boundaries for cleaner chunks.  Each chunk
+    is self-contained enough for the LLM to extract requirements from it.
+
+    F4 fix: replaces the old single-blob truncation that silently discarded
+    68%+ of large tender documents (e.g. 94k chars → 30k).
+    """
+    if len(text) <= chunk_size:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        if end >= len(text):
+            chunks.append(text[start:])
+            break
+
+        # Try to find a newline near the chunk boundary (within last 20% of chunk)
+        search_start = start + int(chunk_size * 0.8)
+        newline_pos = text.rfind("\n", search_start, end)
+        if newline_pos > start:
+            end = newline_pos + 1
+        else:
+            # No good newline — try sentence boundary
+            for sep in ("。", "；", ".", ";"):
+                pos = text.rfind(sep, search_start, end)
+                if pos > start:
+                    end = pos + 1
+                    break
+
+        chunks.append(text[start:end])
+        start = end
+
+    return chunks
+
+
+def _merge_extractions(extractions: list[dict]) -> dict:
+    """Merge multiple LLM extraction results into a single unified result.
+
+    Deduplicates scoring items by ``item_name``, qualifications by exact
+    string, and tech_specs by ``spec_name``.  Format rules are merged with
+    first non-empty value winning.  Project metadata is taken from the
+    first extraction that has a non-empty value.
+    """
+    if not extractions:
+        return {}
+
+    merged: dict = {
+        "project_name": "",
+        "bid_number": "",
+        "tenderer_name": "",
+        "package_number": "",
+        "scoring": [],
+        "qualifications": [],
+        "tech_specs": [],
+        "format_rules": {},
+    }
+
+    seen_scoring: set[str] = set()  # lowercased item_name
+    seen_quals: set[str] = set()
+    seen_specs: set[str] = set()  # lowercased spec_name
+
+    for ext in extractions:
+        if not ext or not isinstance(ext, dict):
+            continue
+
+        # Project metadata: first non-empty wins
+        for field in ("project_name", "bid_number", "tenderer_name", "package_number"):
+            val = ext.get(field, "")
+            if not merged[field] and isinstance(val, str) and val.strip():
+                merged[field] = val.strip()
+
+        # Scoring items: deduplicate by item_name (case-insensitive)
+        for item in ext.get("scoring", []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("item_name", "")).strip().lower()
+            if name and name not in seen_scoring:
+                seen_scoring.add(name)
+                merged["scoring"].append(item)
+
+        # Qualifications: deduplicate by exact string
+        for q in ext.get("qualifications", []):
+            q_str = str(q).strip()
+            if q_str and q_str not in seen_quals:
+                seen_quals.add(q_str)
+                merged["qualifications"].append(q_str)
+
+        # Tech specs: deduplicate by spec_name (case-insensitive)
+        for spec in ext.get("tech_specs", []):
+            if not isinstance(spec, dict):
+                continue
+            name = str(spec.get("spec_name", "")).strip().lower()
+            if name and name not in seen_specs:
+                seen_specs.add(name)
+                merged["tech_specs"].append(spec)
+
+        # Format rules: first non-empty value for each key wins
+        for key, val in ext.get("format_rules", {}).items():
+            if not merged["format_rules"].get(key) and val:
+                merged["format_rules"][key] = val
+
+    return merged
 
 
 # ── Table-derived requirements (P1-1) ──────────────────────────────────
@@ -396,27 +514,46 @@ def req_extractor(
 
     combined = "\n\n".join(all_content_parts)
 
-    # Phase B5: cap input length to avoid LLM OOM on large PDFs.
-    # Truncate at a sentence boundary if possible, keeping the beginning
-    # (which usually contains the most important scoring/qualification info).
-    if len(combined) > MAX_INPUT_CHARS:
-        logger.warning(
-            f"ReqExtractor: input {len(combined)} chars exceeds {MAX_INPUT_CHARS} "
-            f"— truncating to avoid OOM"
+    # F4 fix: chunked extraction replaces single-blob truncation.
+    # Previously, content >30k chars was hard-truncated, silently discarding
+    # 68%+ of large tender documents.  Now we split into chunks and call the
+    # LLM for each, then merge results with deduplication.
+    chunks = _split_into_chunks(combined, MAX_INPUT_CHARS)
+
+    if len(chunks) == 1:
+        # Single chunk — use the original single-call path (with retry)
+        raw = _call_llm_for_extraction(chunks[0], llm_fn)
+        if raw is None and llm_fn is not None:
+            logger.warning("First LLM call returned invalid JSON — retrying")
+            raw = _call_llm_for_extraction(chunks[0], llm_fn)
+    else:
+        # Multiple chunks — extract from each and merge
+        logger.info(
+            f"ReqExtractor: input {len(combined)} chars split into {len(chunks)} "
+            f"chunks (chunk_size={MAX_INPUT_CHARS}) — extracting from each"
         )
-        # Try to cut at a newline near the limit for cleaner truncation
-        cut = combined.rfind("\n", 0, MAX_INPUT_CHARS)
-        if cut < MAX_INPUT_CHARS * 0.8:
-            cut = MAX_INPUT_CHARS  # no good newline → hard cut
-        combined = combined[:cut] + "\n\n[... 文档内容过长，已截断 ...]"
+        extractions: list[dict] = []
+        for i, chunk in enumerate(chunks):
+            chunk_raw = _call_llm_for_extraction(chunk, llm_fn)
+            # Retry once per chunk on JSON parse failure
+            if chunk_raw is None and llm_fn is not None:
+                logger.warning(f"Chunk {i+1}/{len(chunks)} returned invalid JSON — retrying")
+                chunk_raw = _call_llm_for_extraction(chunk, llm_fn)
+            if chunk_raw is not None:
+                extractions.append(chunk_raw)
+            else:
+                logger.warning(f"Chunk {i+1}/{len(chunks)} failed after retry — skipping")
 
-    # Attempt 1
-    raw = _call_llm_for_extraction(combined, llm_fn)
-
-    # Attempt 2 (retry if first call failed to produce valid JSON)
-    if raw is None and llm_fn is not None:
-        logger.warning("First LLM call returned invalid JSON — retrying")
-        raw = _call_llm_for_extraction(combined, llm_fn)
+        if extractions:
+            raw = _merge_extractions(extractions)
+            logger.info(
+                f"ReqExtractor: merged {len(extractions)}/{len(chunks)} chunks → "
+                f"{len(raw.get('scoring', []))} scoring items, "
+                f"{len(raw.get('qualifications', []))} qualifications, "
+                f"{len(raw.get('tech_specs', []))} tech specs"
+            )
+        else:
+            raw = None
 
     if raw is None:
         # P1-1: if LLM failed but we have table-derived data, use it

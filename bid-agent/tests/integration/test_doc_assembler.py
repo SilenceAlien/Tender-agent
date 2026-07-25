@@ -25,7 +25,7 @@ def state_with_sections():
         requirements={
             "scoring": [{"item_name": "方案", "score": 50}],
             "format_rules": {
-                "page_margin": "上3.7cm/下3.5cm/左2.8cm/右2.6cm",
+                "page_margin": "上3.7cm/下3.7cm/左2.8cm/右2.8cm",
                 "font": "正文仿宋_GB2312",
                 "line_spacing": "28磅",
                 "title_levels": ["黑体 二号", "楷体 三号", "仿宋 四号"],
@@ -52,26 +52,26 @@ def state_with_sections():
 
 class TestFormatMargin:
     def test_standard_format(self):
-        margins = _format_margin({"page_margin": "上3.7cm/下3.5cm/左2.8cm/右2.6cm"})
+        margins = _format_margin({"page_margin": "上3.7cm/下3.7cm/左2.8cm/右2.8cm"})
         assert margins["top"] == 3.7
-        assert margins["bottom"] == 3.5
+        assert margins["bottom"] == 3.7
         assert margins["left"] == 2.8
-        assert margins["right"] == 2.6
+        assert margins["right"] == 2.8
 
     def test_partial_format(self):
         margins = _format_margin({"page_margin": "上2.5cm/下2.0cm"})
         assert margins["top"] == 2.5
         assert margins["bottom"] == 2.0
-        # Left/right use defaults
+        # Left/right use defaults (M8 fix: 2.8 not 2.6)
         assert margins["left"] == 2.8
-        assert margins["right"] == 2.6
+        assert margins["right"] == 2.8
 
     def test_default_format(self):
         margins = _format_margin({})
         assert margins["top"] == 3.7
-        assert margins["bottom"] == 3.5
+        assert margins["bottom"] == 3.7
         assert margins["left"] == 2.8
-        assert margins["right"] == 2.6
+        assert margins["right"] == 2.8
 
 
 class TestCmToEmu:
@@ -160,9 +160,9 @@ class TestBuildDocx:
             for section in doc.sections:
                 # Cm uses integer EMU, so compare via approximate EMU values
                 assert abs(section.top_margin - Cm(3.7)) < 1000
-                assert abs(section.bottom_margin - Cm(3.5)) < 1000
+                assert abs(section.bottom_margin - Cm(3.7)) < 1000
                 assert abs(section.left_margin - Cm(2.8)) < 1000
-                assert abs(section.right_margin - Cm(2.6)) < 1000
+                assert abs(section.right_margin - Cm(2.8)) < 1000
 
     def test_line_spacing_applied(self, state_with_sections):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -322,8 +322,11 @@ class TestDocAssemblerNode:
         with tempfile.TemporaryDirectory() as tmpdir:
             result = doc_assembler(state_with_sections, export_dir=tmpdir)
             filename = Path(result["export_path"]).name
-            assert "v0" in filename  # current_round=0
+            # F1 fix: round_num = max(1, current_round=0) = 1 → "v1" in filename
+            assert "v1" in filename  # current_round=0 → round_num=1
             assert filename.endswith(".docx")
+            # F1 fix: no duplicate "标书_标书" when project_id falls back to default
+            assert "标书_标书" not in filename
 
     def test_export_dir_auto_created(self, state_with_sections):
         with tempfile.TemporaryDirectory() as tmpdir:

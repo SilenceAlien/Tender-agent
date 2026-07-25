@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 BANNED_WORDS = ["绝对", "最", "第一", "唯一", "顶级", "国家级", "最高级", "最佳"]
 
+# ── Format-fixed short chapter (格式固定型短章) ─────────────────────
+# 仅授权委托书（ch2_authorization）由 spec ⑦ 明确列为「格式固定型」，
+# 由模板确定性生成，本就不可能达到 8000 字门槛；若硬性判 <8000 字 FAIL
+# 并进入反馈环重生成，会浪费多轮重生成（spec ⑧ 在超轮次后强制通过，
+# 不会无限循环，但此类章节无重生成必要）。故仅豁免其字数门槛，仍做
+# 「非空」校验。其余章节（含 ch7_schedule / ch8_after_sales）按 spec ⑧
+# 走正常 8000 字门槛 + 超轮次强制通过，不在此豁免。
+FORMAT_FIXED_SHORT_CHAPTERS = {
+    "ch2_authorization",
+}
+
 # ── Local checkers (zero-LLM) ─────────────────────────────────────────
 
 
@@ -438,9 +449,15 @@ def _llm_quality_check(
         chapters are actually reviewed instead of silently chopped.
       - Non-JSON responses no longer default to PASS — they return FAIL so
         quality problems surface instead of being hidden.
+
+    L4 fix:
+      - Per spec §⑧, LLM 质检遵循「三重 JSON 容错 → 重试 1 次 → FAIL」。
+        首次调用若异常 / 返回非 JSON / JSON 结构不符预期，在**三重容错
+        都失败**之后重试 1 次；重试仍失败才判 FAIL。重试间隔极小 sleep(0.5s)。
     """
     import json
     import re
+    import time
 
     reqs = state.get("requirements", {})
     scoring_items = reqs.get("scoring", [])
@@ -464,36 +481,56 @@ def _llm_quality_check(
         sections_context=sections_text or "无章节内容",
     )
 
-    response = llm_fn(prompt)
+    # ── L4 修复：三重 JSON 容错 → 重试 1 次 → FAIL ──
+    # 首次调用若异常 / 非 JSON / JSON 结构不符预期，在**三重容错都失败**
+    # 之后重试 1 次；重试仍失败才判 FAIL。重试间隔极小 sleep(0.5s)。
+    max_attempts = 2  # 首次 + 重试 1 次
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = llm_fn(prompt)
 
-    # Extract JSON
-    response = response.strip()
-    code_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", response)
-    if code_match:
-        response = code_match.group(1).strip()
-    brace_match = re.search(r"\{[\s\S]*\}", response)
-    if brace_match:
-        response = brace_match.group(0)
+            # ── 三重 JSON 容错：直接 → ```json``` → 花括号 ──
+            response = response.strip()
+            code_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", response)
+            if code_match:
+                response = code_match.group(1).strip()
+            brace_match = re.search(r"\{[\s\S]*\}", response)
+            if brace_match:
+                response = brace_match.group(0)
 
-    try:
-        return json.loads(response)
-    except json.JSONDecodeError:
-        # Phase B1 fix: non-JSON no longer silently passes.  Returning FAIL
-        # forces the feedback loop to address the issue instead of waving it
-        # through.  The old behaviour (PASS/60) meant a broken LLM response
-        # was treated as "good enough" — a real quality risk.
-        logger.warning(
-            "LLM quality check returned non-JSON response — marking FAIL "
-            "(previously this silently passed)"
-        )
-        return {
-            "verdict": "FAIL",
-            "score": 0,
-            "completeness_issues": ["LLM 质检返回非 JSON 格式，无法解析"],
-            "compliance_issues": [],
-            "consistency_issues": [],
-            "summary": "LLM 响应解析失败",
-        }
+            result = json.loads(response)
+
+            # JSON 结构不符预期（非 dict / 缺 verdict）→ 视为失败，进入重试
+            if not isinstance(result, dict) or "verdict" not in result:
+                raise ValueError(
+                    "LLM 质检返回的 JSON 结构不符合预期（非对象或缺少 verdict 字段）"
+                )
+
+            return result
+
+        except Exception as e:  # 异常 / 非 JSON / 结构不符 → 重试
+            last_err = e
+            logger.warning(
+                f"LLM 质检第 {attempt}/{max_attempts} 次调用失败"
+                f"（异常/非JSON/结构不符）: {e}"
+            )
+            if attempt < max_attempts:
+                time.sleep(0.5)  # 极小间隔，规避瞬时抖动
+
+    # 重试 1 次后仍失败 → 判 FAIL（不再静默 PASS，承 Phase B1）
+    logger.warning(
+        "LLM 质检重试 1 次后仍失败 — 判定 FAIL"
+        f"（上次错误: {last_err}）"
+    )
+    return {
+        "verdict": "FAIL",
+        "score": 0,
+        "completeness_issues": ["LLM 质检返回非 JSON 格式，无法解析"],
+        "compliance_issues": [],
+        "consistency_issues": [],
+        "summary": "LLM 响应解析失败",
+    }
 
 
 # ── LangGraph Node ─────────────────────────────────────────────────────
@@ -537,6 +574,33 @@ def quality_checker(
     completeness, completeness_issues = _check_completeness(requirements, sections)
     compliance_issues = _check_compliance(sections)
     consistency_issues = _check_consistency(sections, state)
+
+    # ── Section completeness threshold (spec §⑧: 每章≥8000字) ──────────
+    # Configurable via state["min_section_chars"] so tests can lower it.
+    # Default 8000 for production; tests typically set 0 to disable.
+    min_section_chars = state.get("min_section_chars", 8000)
+    if min_section_chars > 0:
+        for section_name, content in sections.items():
+            stripped = content.strip()
+            # Skip placeholder-only sections (e.g. 【生成失败：...】)
+            if stripped.startswith("【生成失败"):
+                continue
+            # Empty/whitespace-only content is a completeness failure for ANY
+            # chapter — including format-fixed ones. The exemption below must
+            # not silently pass an empty generation.
+            if not stripped:
+                completeness_issues.append(
+                    f"「{section_name}」内容为空，请补充"
+                )
+                continue
+            # N3 fix: 仅格式固定型短章（ch2_authorization, spec ⑦）豁免字数门槛；
+            # 仍要求非空（上方已校验）。其余章节按 spec ⑧ 正常判 8000 字。
+            if section_name in FORMAT_FIXED_SHORT_CHAPTERS:
+                continue
+            if len(content) < min_section_chars:
+                completeness_issues.append(
+                    f"「{section_name}」内容不完整（{len(content)}字，要求≥{min_section_chars}字）"
+                )
 
     all_issues = completeness_issues + compliance_issues + consistency_issues
     total_items = len(requirements.get("scoring", [])) + len(compliance_issues) + len(consistency_issues)

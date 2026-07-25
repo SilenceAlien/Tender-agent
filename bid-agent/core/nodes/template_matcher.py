@@ -77,7 +77,7 @@ def build_default_search_fn(
     from core.retrieval.template_library import build_template_index
 
     if embedder is None:
-        embedder = MockEmbedder(dim=64)
+        embedder = MockEmbedder(dim=1536)
     if indices is None:
         try:
             indices = build_template_index()
@@ -107,6 +107,49 @@ def build_default_search_fn(
     return search_fn
 
 
+def _keyword_fallback_match(requirements: dict, bid_type: str) -> list[str]:
+    """M1 fix: keyword-based template matching fallback when FAISS/search_fn unavailable.
+
+    Scores templates by keyword overlap between requirements text and
+    template description/sections, filtered by bid_type.
+    """
+    try:
+        from core.retrieval.template_library import TEMPLATES
+    except Exception:
+        return []
+
+    # Build query text from requirements
+    query_parts = []
+    for item in requirements.get("scoring", []):
+        query_parts.append(item.get("item_name", ""))
+    for q in requirements.get("qualifications", []):
+        query_parts.append(str(q))
+    for spec in requirements.get("tech_specs", []):
+        query_parts.append(spec.get("spec_name", ""))
+    query = " ".join(query_parts).lower()
+
+    if not query:
+        return []
+
+    # Score templates of matching bid_type
+    candidates = []
+    templates = TEMPLATES.get(bid_type, [])
+    if not templates:
+        for tpls in TEMPLATES.values():
+            templates.extend(tpls)
+
+    for tpl in templates:
+        desc = (tpl.get("description", "") + " " + " ".join(tpl.get("sections", []))).lower()
+        tokens = [t for t in query.split() if len(t) >= 2]
+        hits = sum(1 for t in tokens if t in desc)
+        score = hits / max(1, len(tokens))
+        if score > 0:
+            candidates.append((tpl["id"], score))
+
+    candidates.sort(key=lambda x: -x[1])
+    return [tid for tid, _ in candidates[:3]]
+
+
 def template_matcher(
     state: AgentState,
     search_fn: Callable[[str, int], list[tuple[str, float]]] | None = None,
@@ -124,10 +167,24 @@ def template_matcher(
     requirements = state.get("requirements", {})
     query = _build_query_text(requirements)
 
-    if not query or search_fn is None:
-        logger.warning("No query text or search function — returning empty matches")
+    if not query:
+        logger.warning("No query text — returning empty matches")
         return {
             "matched_templates": [],
+            "node_status": {
+                **state.get("node_status", {}),
+                "TemplateMatcher": NodeStatus.COMPLETED.value,
+            },
+        }
+
+    # M1 fix: keyword fallback when search_fn is None (FAISS unavailable)
+    if search_fn is None:
+        logger.info("No search_fn — using keyword fallback for template matching")
+        matched = _keyword_fallback_match(requirements, state.get("bid_type", ""))
+        selected_id = matched[0] if matched else ""
+        return {
+            "matched_templates": matched,
+            "selected_template_id": selected_id,
             "node_status": {
                 **state.get("node_status", {}),
                 "TemplateMatcher": NodeStatus.COMPLETED.value,
@@ -137,13 +194,53 @@ def template_matcher(
     # Search template index
     results = search_fn(query, k=5)
 
+    # N08 fix: filter results by bid_type using exact matching.
+    # The search_fn searches across ALL template types, which can return
+    # wrong-type templates (e.g. tpl_service_v1 from 服务类 when bid_type
+    # is 劳务外包类).  Filter to only keep templates of the correct type.
+    #
+    # N17 fix: previously used substring matching (tpl_type in bid_type_stripped)
+    # which caused "劳务管理服务类" to match "服务" (since "服务" is a substring
+    # of "劳务管理服务").  Now that TEMPLATES keys all include "类" suffix
+    # (N08 fix), both sides use the same naming convention and we can do
+    # exact matching.
+    bid_type = state.get("bid_type", "")
+    if bid_type and results:
+        try:
+            from core.retrieval.template_library import TEMPLATES
+            # Build reverse lookup: {template_id: template_type_key}
+            id_to_type: dict[str, str] = {}
+            for tpl_type, templates in TEMPLATES.items():
+                for tpl in templates:
+                    id_to_type[tpl["id"]] = tpl_type
+
+            filtered = []
+            for template_id, distance in results:
+                tpl_type = id_to_type.get(template_id, "")
+                # Exact match: both bid_type and tpl_type now have "类" suffix
+                if tpl_type and tpl_type == bid_type:
+                    filtered.append((template_id, distance))
+                else:
+                    logger.debug(
+                        f"TemplateMatcher: filtered out '{template_id}' "
+                        f"(type={tpl_type}) — doesn't match bid_type={bid_type}"
+                    )
+            if filtered:
+                results = filtered
+            else:
+                logger.warning(
+                    f"TemplateMatcher: no templates match bid_type={bid_type}, "
+                    f"using unfiltered results"
+                )
+        except Exception as e:
+            logger.warning(f"TemplateMatcher: bid_type filter failed: {e}")
+
     # Filter by minimum similarity threshold
-    # FAISS returns L2 distance — convert to cosine similarity approximation
-    # For normalized vectors, cosine_sim ≈ 1 - L2²/2
+    # RAG fix: distance is now cosine distance (1 - cosine_similarity)
+    # So similarity = 1.0 - distance
     matched: list[str] = []
     for template_id, distance in results:
-        # Convert L2 to cosine for normalized vectors
-        similarity = max(0.0, 1.0 - (distance ** 2) / 2.0)
+        similarity = max(0.0, 1.0 - distance)
         if similarity >= MIN_SIMILARITY:
             matched.append(template_id)
 

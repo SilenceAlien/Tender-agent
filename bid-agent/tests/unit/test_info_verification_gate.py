@@ -71,10 +71,10 @@ class TestAnnotateFieldSources:
             extraction_state["project_contract"],
             {},
         )
-        # bidder_name only in contract (补充说明 / LLM)
-        assert sources["bidder_name"] == "补充说明"
-        assert sources["project_location"] == "补充说明"
-        assert sources["duration"] == "补充说明"
+        # bidder_name only in contract (LLM extracted)
+        assert sources["bidder_name"] == "LLM"
+        assert sources["project_location"] == "LLM"
+        assert sources["duration"] == "LLM"
 
     def test_source_from_user_fields(self, extraction_state):
         user_fields = {"bidder_name": "广州华南人力有限公司"}

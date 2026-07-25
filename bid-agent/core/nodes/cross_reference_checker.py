@@ -87,7 +87,7 @@ def _check_personnel_consistency(sections: dict[str, str]) -> list[dict]:
                 "field": "人员数量",
                 "detail": f"不同章节的总人数不一致：{max_per_section}",
                 "sections": list(max_per_section.keys()),
-                "severity": "medium",
+                "severity": "high",
             })
 
     return issues
@@ -150,7 +150,7 @@ def _check_date_consistency(sections: dict[str, str]) -> list[dict]:
                 "field": "关键日期",
                 "detail": f"不同章节出现不一致的日期：{unique_dates}",
                 "sections": list(set(s for _, s in signing_dates)),
-                "severity": "medium",
+                "severity": "high",
             })
 
     return issues
@@ -284,7 +284,7 @@ def _check_contract_deviation(
                         f"可能与本项目无关，请检查。"
                     ),
                     "section": section_name,
-                    "severity": "high",
+                    "severity": "critical",
                 })
 
     return issues
@@ -338,7 +338,7 @@ def _check_tech_parameter_consistency(sections: dict[str, str]) -> list[dict]:
                     f"{section_values}"
                 ),
                 "sections": list(section_values.keys()),
-                "severity": "medium",
+                "severity": "high",
             })
 
     return issues
@@ -388,7 +388,11 @@ def cross_reference_checker(
     inconsistencies.extend(_check_tech_parameter_consistency(sections))
 
     # Verdict: FAIL on high/critical-severity issues
-    has_high = any(i.get("severity") in ("high", "critical") for i in inconsistencies)
+    # Case-insensitive check: spec uses "CRITICAL" (uppercase), code uses "critical" (lowercase)
+    has_high = any(
+        i.get("severity", "").lower() in ("high", "critical")
+        for i in inconsistencies
+    )
     verdict = "FAIL" if has_high else "PASS"
 
     logger.info(

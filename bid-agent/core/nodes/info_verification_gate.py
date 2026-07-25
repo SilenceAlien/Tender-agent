@@ -58,19 +58,24 @@ def _annotate_field_sources(
     requirements: dict,
     project_contract: dict,
     user_fields: dict,
+    bid_subtype_value: str = "",
 ) -> dict[str, str]:
     """Annotate where each field's value originated.
 
-    Priority: 用户填写 > 招标文件 > 补充说明 > 推断 > 缺失
+    Priority: 用户填写 > 招标文件 > 补充说明(合同补全) > LLM(次级源) > 缺失
+
+    五类来源均会被实际产出，无死分支：
+        "用户填写" : 用户在表单中确认/填写
+        "招标文件" : 来自 requirements（招标文件结构化字段）
+        "补充说明" : 来自 project_contract 的合同补全/补充说明合并字段
+        "LLM"      : 仅存在于合同次级 LLM 源（如 project_code）或系统判定的子类型
+        "缺失"     : 任何来源均无值
 
     Args:
         requirements: Extracted by ReqExtractor from the tender document.
         project_contract: Built by ContractExtractor (LLM + requirements merge).
         user_fields: Form fields from the upload panel (form_bidder_name etc.).
-
-    Returns:
-        {field_name: source_label} where source_label is one of:
-        "用户填写" | "招标文件" | "补充说明" | "缺失"
+        bid_subtype_value: Resolved bid_subtype (user confirmed > state).
     """
     sources: dict[str, str] = {}
 
@@ -82,7 +87,7 @@ def _annotate_field_sources(
         "package_number": requirements.get("package_number", ""),
     }
 
-    # Fields that come primarily from contract (补充说明 / LLM)
+    # Fields that come primarily from contract (补充说明 / 合同补全)
     contract_fields = {
         "bidder_name": project_contract.get("bidder_name", ""),
         "project_location": project_contract.get("project_location", ""),
@@ -92,8 +97,7 @@ def _annotate_field_sources(
         "service_target": project_contract.get("service_target", ""),
     }
 
-    # Cross-source mappings: some fields have secondary sources in contract
-    # e.g., bid_number may also come from contract.project_code (LLM extracted)
+    # Secondary contract sources (raw LLM extraction path, e.g. project_code)
     contract_secondary = {
         "bid_number": project_contract.get("project_code", ""),
         "project_name": project_contract.get("project_name", ""),
@@ -104,20 +108,30 @@ def _annotate_field_sources(
     all_fields = {**req_fields, **contract_fields}
 
     for field_name, value in all_fields.items():
-        # Check user form fields first (highest priority)
+        # 1) 用户确认/填写（最高优先级）
         if user_fields.get(field_name):
             sources[field_name] = "用户填写"
+        # 2) 主源有值
         elif value:
-            # Value found in primary source
             if field_name in req_fields:
                 sources[field_name] = "招标文件"
             else:
+                # 合同补全/补充说明合并字段 → 补充说明
                 sources[field_name] = "补充说明"
+        # 3) 主源无值，但次级 LLM 源有值 → LLM（原 N3 死分支已并入此处）
         elif field_name in contract_secondary and contract_secondary[field_name]:
-            # Value not in primary source but found in contract (LLM extracted)
-            sources[field_name] = "补充说明"
+            sources[field_name] = "LLM"
         else:
             sources[field_name] = "缺失"
+
+    # bid_subtype 为节点级字段，单独标注：
+    #   用户确认 → 用户填写；系统/LLM 判定 → LLM；否则缺失
+    if user_fields.get("bid_subtype"):
+        sources["bid_subtype"] = "用户填写"
+    elif bid_subtype_value:
+        sources["bid_subtype"] = "LLM"
+    else:
+        sources["bid_subtype"] = "缺失"
 
     return sources
 
@@ -186,7 +200,9 @@ def _build_info_summary(state: AgentState) -> dict:
             pass
 
     # Annotate sources
-    field_sources = _annotate_field_sources(requirements, contract, user_fields)
+    field_sources = _annotate_field_sources(
+        requirements, contract, user_fields, bid_subtype_value=bid_subtype_val
+    )
 
     # Count extracted items
     scoring = requirements.get("scoring", [])
@@ -347,6 +363,10 @@ def apply_user_corrections(
         "user_confirmed_fields": corrected_fields,
         "project_contract": contract.to_dict(),
         "global_constraints": global_constraints,
+        # N4 fix: 把表单修正/确认的 bid_subtype 回写到顶层 state，
+        # 供下游 TemplateMatcher / SectionGenerator 子类型分区检索消费。
+        # 若修正值未含该键则保留编辑前的现有值。
+        "bid_subtype": corrected_fields.get("bid_subtype", state.get("bid_subtype", "")),
         "node_status": {
             **state.get("node_status", {}),
             "InfoVerificationGate": NodeStatus.COMPLETED.value,

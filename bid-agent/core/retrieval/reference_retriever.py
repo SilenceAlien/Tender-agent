@@ -24,6 +24,21 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_path_component(name: str) -> str:
+    """Sanitize a single KB path component to prevent directory traversal.
+
+    KB directory names are like '劳务外包类', '_shared', '食堂餐饮'. Keep only
+    word chars, CJK ideographs and hyphens; strip path separators and '..'
+    segments. Returns '' for empty/unsafe input so the caller's .exists()
+    guard skips it instead of reading outside kb_root.
+    """
+    if not name:
+        return ""
+    cleaned = name.replace("\\", "/").split("/")[-1].replace("..", "")
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff\-]", "", cleaned)
+    return cleaned
+
 # Default knowledge base root (relative to project root)
 _DEFAULT_KB_ROOT = Path(__file__).parent.parent.parent.parent / "knowledge_base"
 
@@ -55,6 +70,9 @@ class ReferenceRetriever:
             faiss_index: Optional FAISS index for semantic search.
         """
         self.kb_root = Path(kb_root) if kb_root else _DEFAULT_KB_ROOT
+        # embedder 可为 OpenAIEmbedder（生产语义检索）或 MockEmbedder。
+        # MockEmbedder 仅用于离线/测试专用：缺 OPENAI_API_KEY 时仍能运行，
+        # 不会强制要求 key，仅语义路径退化为随机向量，关键词回退路径不受影响。
         self.embedder = embedder
         self.faiss_index = faiss_index
         self._cache: dict[str, str] = {}  # query → result cache
@@ -77,12 +95,13 @@ class ReferenceRetriever:
 
         # 归一化 bid_type → KB 目录名: 劳务管理服务类/劳务外包类 都映射到 劳务外包类
         kb_type = "劳务外包类" if ("劳务" in bid_type) else bid_type
+        kb_type = _safe_path_component(kb_type)
 
         candidates: list[Path] = []
 
         # 95+优化: 优先搜索子类型分区 chunks
         if bid_subtype:
-            subtype_dir = self.kb_root / kb_type / bid_subtype / "chunks"
+            subtype_dir = self.kb_root / kb_type / _safe_path_component(bid_subtype) / "chunks"
             if subtype_dir.exists():
                 for f in subtype_dir.glob("*.txt"):
                     if section_key in f.name:
@@ -101,6 +120,30 @@ class ReferenceRetriever:
             except Exception:
                 pass
 
+        # 95+优化 补强四: 冷启动/样本不足时, 用最相似子类型的 chunks 补充检索
+        if bid_subtype:
+            try:
+                from core.retrieval.subtype_router import (
+                    get_retrieval_weights,
+                    find_nearest_subtypes,
+                )
+                # 消费权重表: 记录三档动态权重, 供后续融合/调试
+                weights = get_retrieval_weights(bid_subtype, kb_root=self.kb_root)
+                logger.debug(
+                    f"SubtypeRouter weights for '{bid_subtype}': {weights}"
+                )
+                # 冷启动(neighbor>0) 或 当前子类型 + _shared 均无匹配 → 补充最近邻子类型
+                if weights.get("neighbor", 0.0) > 0.0 or not candidates:
+                    for neighbor, sim in find_nearest_subtypes(bid_subtype):
+                        neighbor_dir = self.kb_root / kb_type / _safe_path_component(neighbor) / "chunks"
+                        if not neighbor_dir.exists():
+                            continue
+                        for f in neighbor_dir.glob("*.txt"):
+                            if section_key in f.name:
+                                candidates.append(f)
+            except Exception as e:
+                logger.warning(f"Nearest-subtype fallback failed: {e}")
+
         # Try exact bid_type directory first (existing behavior)
         if not candidates:
             type_dir = self.kb_root / kb_type / "范文"
@@ -117,6 +160,39 @@ class ReferenceRetriever:
                     candidates.append(f)
 
         return candidates[:3]  # cap at 3 files
+
+    def _load_doc_by_id(self, doc_id: str, query_hint: str = "") -> str:
+        """RAG doc_store wire: 基于 doc_id 从 knowledge_base 装载 doc 片段。
+
+        与 keyword 的 extract_best_snippet 一致，确保 snippet 格式相容。
+        query_hint 用于按真实查询抽取最相关片段；为空时回退默认 query。
+        """
+        if not self.kb_root.exists():
+            return ""
+
+        # 优先使用真实 query（语义检索调用处传入），否则回退默认
+        snippet_query = query_hint or "招标要求"
+
+        # 尝试直接作为相对路径装载
+        candidate = self.kb_root / doc_id
+        if candidate.exists() and candidate.is_file():
+            return self._extract_best_snippet(
+                candidate,
+                query=snippet_query,
+                max_chars=MAX_REF_CHARS_PER_SECTION
+            )
+
+        # 回退：逐级 search rglob（兼容旧的仅文件名的 doc_id 格式）
+        matches = list(self.kb_root.rglob(doc_id))
+        if matches:
+            f = matches[0]
+            return self._extract_best_snippet(
+                f,
+                query=snippet_query,
+                max_chars=MAX_REF_CHARS_PER_SECTION
+            )
+        
+        return ""
 
     def _keyword_score(self, query: str, text: str) -> float:
         """Score a text snippet by keyword overlap with the query.
@@ -209,10 +285,15 @@ class ReferenceRetriever:
                 results = self.faiss_index.search(query_vec, k=1)
                 if results and results[0]:
                     doc_id = results[0][0][0]
-                    # Look up the document text from a metadata store
-                    # (for now, semantic mode returns the ID; full text
-                    # retrieval requires a doc store which isn't wired yet)
-                    logger.debug(f"Semantic retrieval returned ID: {doc_id}")
+                    # Look up the document text from a local doc store (file-based)
+                    # Pass the real semantic query so snippet extraction is relevant
+                    snippet = self._load_doc_by_id(doc_id, query_hint=query)
+                    if snippet:
+                        logger.debug(f"Semantic retrieval returned doc with {len(snippet)} chars")
+                        self._cache[cache_key] = snippet
+                        return snippet
+                    else:
+                        logger.warning(f"Semantic doc_id {doc_id} not found in doc store")
             except Exception as e:
                 logger.warning(f"Semantic retrieval failed: {e} — falling back to keyword")
 

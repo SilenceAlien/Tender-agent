@@ -6,6 +6,8 @@ ALL_NODES = [
     "DocumentParser",
     "ReqExtractor",
     "ContractExtractor",
+    # M13 fix: InfoVerificationGate was missing from progress display
+    "InfoVerificationGate",
     "EligibilityChecker",
     "TemplateMatcher",
     "SectionGenerator",
@@ -22,6 +24,8 @@ NODE_LABELS = {
     "DocumentParser": "📄 文档解析",
     "ReqExtractor": "🔍 需求提取",
     "ContractExtractor": "📜 契约构建",
+    # M13 fix: add label for InfoVerificationGate
+    "InfoVerificationGate": "🔍 信息校验",
     "EligibilityChecker": "🔐 资质校验",
     "TemplateMatcher": "📋 模板匹配",
     "SectionGenerator": "✍️ 章节生成",

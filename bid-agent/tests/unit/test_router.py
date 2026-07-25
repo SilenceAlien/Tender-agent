@@ -33,9 +33,10 @@ class TestModelRouter:
 
     def test_get_llm_for_quality_checker(self):
         router = ModelRouter()
-        router.set_api_key("openai", "sk-test")
+        # M16 fix: QualityChecker default is now deepseek, not openai
+        router.set_api_key("deepseek", "sk-test")
         llm = router.get_llm("QualityChecker")
-        assert "gpt-4o-mini" in str(llm.model_name).lower() or "gpt-4o-mini" in str(getattr(llm, 'model', ''))
+        assert "deepseek-chat" in str(llm.model_name).lower() or "deepseek-chat" in str(getattr(llm, 'model', ''))
 
     def test_override_provider_per_node(self):
         config = {"SectionGenerator": {"provider": "openai", "model": "gpt-4o"}}

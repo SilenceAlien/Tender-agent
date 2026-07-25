@@ -117,9 +117,9 @@ class TestTemplateMatcherNode:
         assert result["node_status"]["TemplateMatcher"] == NodeStatus.COMPLETED.value
 
     def test_similarity_threshold_boundary(self, state_with_requirements):
-        """L2 distance 1.0 → cosine_sim ≈ 0.5, which > 0.3 threshold."""
+        """Cosine distance 0.5 → cosine_sim = 0.5, which > 0.3 threshold."""
         def search_fn(query: str, k: int):
-            return [("tpl_test", 1.0)]
+            return [("tpl_test", 0.5)]  # distance 0.5 → similarity 0.5 > 0.3
         result = template_matcher(state_with_requirements, search_fn=search_fn)
         assert len(result["matched_templates"]) == 1
 

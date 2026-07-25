@@ -28,6 +28,7 @@ def state_r0():
             "第二章": "服务方案完整性描述详细。售后服务覆盖全面。响应时间30分钟。" * 5,  # OK
         },
         current_round=0,
+        min_section_chars=0,  # Disable 8000-char threshold for tests
     )
 
 

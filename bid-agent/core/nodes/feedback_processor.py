@@ -2,13 +2,21 @@
 
 Contract (from node_interfaces.md):
     def feedback_processor(state: AgentState) -> dict
-    Input:  state.quality_report, state.sections
-    Output: {feedback_history: [FeedbackRecord], current_round: +1, node_status: {...}}
+    Input:  state.quality_report, state.sections, state.feedback_history,
+            state.global_constraints, state.compressed_history,
+            state.context_window_size
+    Output: {feedback_history: [FeedbackRecord], global_constraints: [str],
+             compressed_history: str, context_window_size: int,
+             current_round: +1, node_status: {...}}
     Constraints:
     - Classification: content_fix | style_adjust | structure | score_align
     - Scope: global (all sections) | local (single section/paragraph)
     - target_section extracted from compliance/consistency issues
     - Increments current_round (never exceeds max_rounds in routing)
+    - Three-layer feedback history (M4): global_constraints (Layer 1,
+      scope=global, never discarded) / compressed_history (Layer 2,
+      dedup+merge) / context_window_size (Layer 3, default 3 → recent N rounds)
+    - feedback_history 保持扁平 list[dict]，SectionGenerator 直接消费，向后兼容
 """
 
 import logging
@@ -18,6 +26,97 @@ from typing import Callable
 from core.state import AgentState, NodeStatus
 
 logger = logging.getLogger(__name__)
+
+# ── Three-layer feedback history (M4 fix) ───────────────────────────────
+# 规范 ⑨ 要求反馈历史分三层组织：
+#   Layer 1 — global_constraints: 跨所有章节的全局硬性约束，永不丢弃
+#   Layer 2 — compressed_history: 压缩后的历史反馈（去重/合并同类）
+#   Layer 3 — context_window_size: 默认 3，仅保留最近 N 轮作为当前上下文窗口
+# 注意：feedback_history 仍保持扁平 list[dict]（SectionGenerator 直接消费该列表，
+# 向后兼容），三层结构由本模块从上述扁平列表派生并回写到 state 对应字段。
+DEFAULT_CONTEXT_WINDOW_SIZE = 3
+
+
+def _feedback_dedup_key(record: dict) -> tuple:
+    """合并同类反馈的稳定键。
+
+    相同 (scope, target_section, feedback_type, 归一化问题) 折叠为一条，
+    保留**最新**一条（后写入覆盖先写入，last-write-wins）。
+    """
+    text = (record.get("feedback_text") or "").strip().lower()
+    return (
+        record.get("scope", ""),
+        record.get("target_section", ""),
+        record.get("feedback_type", "content_fix"),
+        text,
+    )
+
+
+def build_global_constraints(
+    history: list[dict], existing: list[str] | None = None
+) -> list[str]:
+    """Layer 1 — 收集跨章节全局硬性约束（scope=global）。
+
+    跨所有轮次累积、去重，全局约束永不丢弃。
+    """
+    constraints: list[str] = list(existing or [])
+    seen = set(constraints)
+    for rec in history:
+        if rec.get("scope") == "global":
+            text = (rec.get("feedback_text") or "").strip()
+            if text and text not in seen:
+                constraints.append(text)
+                seen.add(text)
+    return constraints
+
+
+def compress_feedback_history(history: list[dict]) -> list[dict]:
+    """Layer 2 — 对同类反馈去重/合并，相同问题仅保留最新一条。"""
+    merged: dict[tuple, dict] = {}
+    for rec in history:
+        merged[_feedback_dedup_key(rec)] = rec  # 后续轮次覆盖先前轮次
+    return list(merged.values())
+
+
+def format_compressed_history(compressed: list[dict]) -> str:
+    """将压缩后的反馈列表渲染为单一摘要字符串（写入 state.compressed_history）。"""
+    if not compressed:
+        return ""
+    lines = []
+    for rec in compressed:
+        scope = rec.get("scope", "")
+        ftype = rec.get("feedback_type", "content_fix")
+        target = rec.get("target_section", "")
+        round_no = rec.get("round", "?")
+        loc = f"@{target}" if target else ""
+        lines.append(
+            f"[R{round_no}] ({scope}/{ftype}{loc}) {rec.get('feedback_text', '')}"
+        )
+    return "\n".join(lines)
+
+
+def get_recent_context_window(
+    history: list[dict], size: int = DEFAULT_CONTEXT_WINDOW_SIZE
+) -> list[dict]:
+    """Layer 3 — 仅保留最近 `size` 轮反馈，供下游构造 prompt 上下文使用。"""
+    if not history or size <= 0:
+        return list(history)
+    rounds = sorted({rec.get("round", 0) for rec in history})
+    recent_rounds = set(rounds[-size:])
+    return [rec for rec in history if rec.get("round", 0) in recent_rounds]
+
+
+def build_feedback_layers(
+    history: list[dict], context_window_size: int = DEFAULT_CONTEXT_WINDOW_SIZE
+) -> dict:
+    """一次性导出三层结构（供下游消费/调试）。"""
+    compressed = compress_feedback_history(history)
+    return {
+        "global_constraints": build_global_constraints(history),
+        "compressed_history": format_compressed_history(compressed),
+        "context_window_size": context_window_size,
+        "recent_context": get_recent_context_window(history, context_window_size),
+    }
 
 
 def _learn_consistency_lessons(state: dict, llm_fn: Callable[[str], str] | None = None) -> None:
@@ -125,6 +224,14 @@ def feedback_processor(
     feedback_history = list(state.get("feedback_history", []))
     current_round = state.get("current_round", 0)
 
+    # ── M4: 读取三层反馈历史结构（保持向后兼容）──────────────────────
+    context_window_size = (
+        state.get("context_window_size", DEFAULT_CONTEXT_WINDOW_SIZE)
+        or DEFAULT_CONTEXT_WINDOW_SIZE
+    )
+    global_constraints = list(state.get("global_constraints", []))
+    compressed_history = state.get("compressed_history", "")
+
     issues = []
     issues.extend(quality.get("compliance", []))
     issues.extend(quality.get("consistency", []))
@@ -164,6 +271,9 @@ def feedback_processor(
         logger.info("No feedback to process")
         return {
             "feedback_history": feedback_history,
+            "global_constraints": global_constraints,
+            "compressed_history": compressed_history,
+            "context_window_size": context_window_size,
             "current_round": current_round,  # Don't increment without issues
             "node_status": {
                 **state.get("node_status", {}),
@@ -203,8 +313,24 @@ def feedback_processor(
         f"(round {current_round + 1})"
     )
 
+    # ── M4: 重构反馈历史为三层结构 ───────────────────────────────────
+    full_history = feedback_history + new_feedbacks
+    # Layer 1: 跨章节全局约束（scope=global）累积、去重、永不丢弃
+    new_global_constraints = build_global_constraints(full_history, global_constraints)
+    # Layer 2: 压缩历史（同类去重/合并，保留最新一条）
+    new_compressed_history = format_compressed_history(
+        compress_feedback_history(full_history)
+    )
+    # Layer 3: context_window_size 常量维持默认 3，供下游构造 prompt 上下文
+    #          时通过 get_recent_context_window() 仅取最近 N 轮。
+
     return {
-        "feedback_history": feedback_history + new_feedbacks,
+        # 扁平列表保持原样（SectionGenerator 直接消费，向后兼容）
+        "feedback_history": full_history,
+        # 三层结构回写 state
+        "global_constraints": new_global_constraints,
+        "compressed_history": new_compressed_history,
+        "context_window_size": context_window_size,
         "current_round": current_round + 1,
         "node_status": {
             **state.get("node_status", {}),
