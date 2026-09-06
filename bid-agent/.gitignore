@@ -44,3 +44,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+.pytest_tmp/
+
+# 测试副作用备份
+data/*.bak*

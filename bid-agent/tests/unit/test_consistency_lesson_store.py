@@ -523,7 +523,11 @@ class TestCodeReviewFixes:
         assert store.count() == 2
 
     def test_fix3_merge_on_high_keyword_similarity(self, store):
-        """发现3修复：keyword 高度重合（≥0.6）时即使无章节重叠也应合并。"""
+        """M12 修复（fix_M_summary.md）：去重为「Jaccard≥阈值 AND 章节重叠」双重条件。
+
+        keyword 高度重合（Jaccard=0.75）但章节无重叠时，依据 §4.3 AND 语义
+        不应合并——旧「sim≥0.6 无章节重叠也合并」分支已在 M12 修复中删除。
+        """
         store.add_lesson(
             issue_type="amount_mismatch",
             title="金额不一致",
@@ -532,7 +536,7 @@ class TestCodeReviewFixes:
             keywords=["金额", "报价", "保证金"],
             applicable_sections=["投标函"],
         )
-        # keywords 高度重合，但 sections 不同
+        # keywords 高度重合，但 sections 不同（无重叠）
         store.add_lesson(
             issue_type="amount_mismatch",
             title="金额问题",
@@ -541,8 +545,20 @@ class TestCodeReviewFixes:
             keywords=["金额", "报价", "保证金", "元"],
             applicable_sections=["分项报价表"],
         )
-        # 应合并（Jaccard = 3/4 = 0.75 ≥ 0.6）
-        assert store.count() == 1
+        # AND 语义：无章节重叠 → 不合并，各自保持独立
+        assert store.count() == 2
+
+        # 对照组：keywords 高度重合「且」章节重叠 → 合并
+        store.add_lesson(
+            issue_type="amount_mismatch",
+            title="金额问题2",
+            description="d3",
+            rule="r3",
+            keywords=["金额", "报价", "保证金"],
+            applicable_sections=["投标函", "开标一览表"],
+        )
+        # Jaccard=1.0 ≥ 阈值 且与经验A章节重叠（投标函）→ 与经验A合并
+        assert store.count() == 2
         assert store.get_all_lessons()[0]["occurrence_count"] == 2
 
     def test_fix4_no_noise_keywords(self, store):

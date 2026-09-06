@@ -42,6 +42,9 @@ include = ["core*", "gui*", "config*", "adapters*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# WorkBuddy 沙箱会拦截 /var/folders 下 pytest 根临时目录的重复 mkdir（EEXIST→PermissionError），
+# 故将 basetemp 固化到项目内，保证 tmp_path fixture 在沙箱内可重复运行。
+addopts = "--basetemp=.pytest_tmp"
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",

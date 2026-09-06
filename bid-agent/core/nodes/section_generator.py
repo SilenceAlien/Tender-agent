@@ -3,8 +3,13 @@
 Contract (from node_interfaces.md):
     def section_generator(state: AgentState) -> dict
     Input:  state.requirements, state.selected_template_id, state.sections,
-            state.bid_type, state.feedback_history
+            state.bid_type, state.feedback_history,
+            state.global_constraints, state.compressed_history,
+            state.context_window_size  (R1: 三层反馈历史消费，specs/010 批次1)
     Output: {sections: {section_name: content}, node_status: {...}}
+
+    R1 note: 三层反馈消费发生在 generate_all_sections_parallel（graph.py:56
+    生产接线路径）；本文件内的 section_generator() 单段路径不消费反馈。
 
 Supports:
     - LLM injection via functools.partial (Phase A1)
@@ -17,6 +22,10 @@ Supports:
 import logging
 from typing import Callable
 
+from core.nodes.feedback_processor import (
+    DEFAULT_CONTEXT_WINDOW_SIZE,
+    get_recent_context_window,
+)
 from core.state import AgentState, NodeStatus
 
 logger = logging.getLogger(__name__)
@@ -524,13 +533,27 @@ def _collect_section_feedback(state: AgentState) -> dict[str, list[str]]:
     rejection via ``resume_after_review``) are treated as **global feedback**
     and applied to ALL existing sections.
 
+    R1 fix (specs/010 批次1, Layer 3): 修订指令仅取最近 ``context_window_size``
+    轮反馈（get_recent_context_window）。更早轮次的反馈不再进入定向修订指令，
+    而是以 Layer 1（全局约束）/ Layer 2（压缩摘要）形式保留在 prompt 中，
+    避免 prompt 随轮次无限膨胀。
+
+    注意（有意权衡）：scope=global 的窗口内反馈会同时出现在 Layer 1 约束块与
+    本函数产出的修订指令中（token 轻度冗余）。不跳过它们的原因：global 反馈
+    必须触发「已生成章节强制再生成」（R02 fix），仅靠 Layer 1 注入无法让
+    无 local 反馈的章节进入再生成集合。
+
     Returns:
         {section_name: [feedback_text, ...]} — only sections with feedback.
     """
     feedback_history = state.get("feedback_history", []) or []
+    # 与写侧（feedback_processor）一致做 None/0 归一：异常值回退默认窗口 3
+    window_size = state.get("context_window_size") or DEFAULT_CONTEXT_WINDOW_SIZE
+    recent_history = get_recent_context_window(feedback_history, window_size)
+
     by_section: dict[str, list[str]] = {}
     global_feedbacks: list[str] = []
-    for record in feedback_history:
+    for record in recent_history:
         target = record.get("target_section", "")
         text = record.get("feedback_text", "")
         if not text:
@@ -550,11 +573,54 @@ def _collect_section_feedback(state: AgentState) -> dict[str, list[str]]:
     return by_section
 
 
+# ── Three-layer feedback blocks (R1, specs/010 批次1) ──────────────────
+# 修复断裂点 A：FeedbackProcessor 写侧（M4）正确回写三层结构到 state，
+# 但生成侧此前零消费。以下两个块构造函数 + Layer 3 窗口（见上）补全消费链。
+
+GLOBAL_CONSTRAINTS_HEADER = "【全局硬性约束（历轮累积，任何章节必须遵守）】"
+COMPRESSED_HISTORY_HEADER = "【历史反馈摘要（去重压缩，供参考，勿重蹈覆辙）】"
+COMPRESSED_HISTORY_MAX_CHARS = 500
+
+
+def _build_global_constraints_block(constraints: list[str]) -> str:
+    """Layer 1 — 全局硬性约束块（置顶注入所有生成中的章节 prompt）。
+
+    来自 state.global_constraints（FeedbackProcessor 跨轮累积、去重、
+    永不丢弃的 scope=global 反馈）。保证多轮微调时全局硬性约束不丢失
+    （PRD §4.1.5「定向修订不丢历史约束」）。空约束返回空串（首轮零注入）。
+    注意：约束不得与系统级防虚构指令冲突，冲突时以系统指令为准。
+    """
+    if not constraints:
+        return ""
+    lines = [GLOBAL_CONSTRAINTS_HEADER + "（不得与系统级防虚构指令冲突，冲突时以系统指令为准）"]
+    lines.extend(f"  {i}. {c}" for i, c in enumerate(constraints, 1))
+    return "\n".join(lines) + "\n\n"
+
+
+def _build_compressed_history_block(
+    compressed: str, max_chars: int = COMPRESSED_HISTORY_MAX_CHARS
+) -> str:
+    """Layer 2 — 压缩历史摘要块（限长截断，附于章节提示之后）。
+
+    来自 state.compressed_history（同类反馈去重合并后的历史摘要字符串）。
+    窗口外旧轮次反馈靠本块保留线索；限长避免 prompt 膨胀。空串返回空串。
+    """
+    if not compressed:
+        return ""
+    truncated = compressed[:max_chars]
+    suffix = "…（超长已截断）" if len(compressed) > max_chars else ""
+    return f"\n\n{COMPRESSED_HISTORY_HEADER}\n{truncated}{suffix}"
+
+
 def _build_revision_context(feedback_texts: list[str]) -> str:
-    """Format feedback items into a revision instruction block for the prompt."""
+    """Format feedback items into a revision instruction block for the prompt.
+
+    R1 (Layer 3): feedback_texts 已经过近 N 轮窗口过滤（见
+    _collect_section_feedback），文案相应表述为「近几轮」。
+    """
     if not feedback_texts:
         return ""
-    lines = ["\n\n【上一轮质检反馈，请针对性修订】"]
+    lines = ["\n\n【近几轮质检反馈，请针对性修订】"]
     for i, fb in enumerate(feedback_texts, 1):
         lines.append(f"  {i}. {fb}")
     lines.append("请在本次生成中直接解决以上问题，不要回避。")
@@ -754,6 +820,11 @@ def generate_all_sections_parallel(
     existing = state.get("sections", {})
     # Per-section feedback → forces regeneration of that section
     section_feedback = _collect_section_feedback(state)
+    # R1（specs/010 批次1）Layer 1/2：消费 FeedbackProcessor 写侧回写的三层
+    # 结构中与单章节无关的两层——全局硬性约束（置顶）与压缩历史摘要（限长）。
+    # 干净 state 下两者为空串，prompt 与修复前逐字节一致（零行为变更守卫）。
+    l1_block = _build_global_constraints_block(state.get("global_constraints", []) or [])
+    l2_block = _build_compressed_history_block(state.get("compressed_history", "") or "")
     # Phase A3/B3: resolve section set from selected template or bid_type
     target_sections = _resolve_sections_from_template(state)
     bid_type = state.get("bid_type", "")
@@ -775,6 +846,9 @@ def generate_all_sections_parallel(
 
         prompt = _get_section_prompt(key, requirements_context, bid_type=bid_type,
                                      contract_summary=contract_summary, bid_subtype=bid_subtype)
+        # R1 注入顺序：Layer 1 全局约束置顶（不可变硬约束优先级最高）
+        # → 章节提示主体 → Layer 2 压缩历史 → Layer 3 定向修订指令。
+        prompt = l1_block + prompt + l2_block
         # Inject revision context so the LLM addresses the specific issues
         prompt = prompt + _build_revision_context(feedback_texts)
 

@@ -71,10 +71,12 @@ class TestAnnotateFieldSources:
             extraction_state["project_contract"],
             {},
         )
-        # bidder_name only in contract (LLM extracted)
-        assert sources["bidder_name"] == "LLM"
-        assert sources["project_location"] == "LLM"
-        assert sources["duration"] == "LLM"
+        # specs/006 spec.md:114,286-287：bidder_name/project_location/duration
+        # 来自 project_contract 的合同补全/补充说明合并字段 → 标注「补充说明」；
+        # "LLM" 仅用于合同次级源（如 project_code 回填 bid_number）
+        assert sources["bidder_name"] == "补充说明"
+        assert sources["project_location"] == "补充说明"
+        assert sources["duration"] == "补充说明"
 
     def test_source_from_user_fields(self, extraction_state):
         user_fields = {"bidder_name": "广州华南人力有限公司"}
