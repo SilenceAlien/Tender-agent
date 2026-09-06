@@ -466,6 +466,310 @@
       "occurrence_count": 1,
       "first_seen": "2026-07-21T03:19:22.237927+00:00",
       "last_seen": "2026-07-21T03:19:22.237927+00:00"
+    },
+    {
+      "id": "lesson_71a07c49e060",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:05:33.232621+00:00",
+      "last_seen": "2026-09-06T12:05:33.232621+00:00"
+    },
+    {
+      "id": "lesson_7ae3bc3cc031",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:05:33.242127+00:00",
+      "last_seen": "2026-09-06T12:05:33.242127+00:00"
+    },
+    {
+      "id": "lesson_e98399377633",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:05:33.245588+00:00",
+      "last_seen": "2026-09-06T12:05:33.245588+00:00"
+    },
+    {
+      "id": "lesson_56028a076e65",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:05:33.248585+00:00",
+      "last_seen": "2026-09-06T12:05:33.248585+00:00"
+    },
+    {
+      "id": "lesson_979bc96d4716",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:05:33.257249+00:00",
+      "last_seen": "2026-09-06T12:05:33.257249+00:00"
+    },
+    {
+      "id": "lesson_1e90177fba99",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:05:33.260756+00:00",
+      "last_seen": "2026-09-06T12:05:33.260756+00:00"
+    },
+    {
+      "id": "lesson_e5a044525248",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:05:33.264038+00:00",
+      "last_seen": "2026-09-06T12:05:33.264038+00:00"
+    },
+    {
+      "id": "lesson_3cb95b00f920",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:05:33.266090+00:00",
+      "last_seen": "2026-09-06T12:05:33.266090+00:00"
+    },
+    {
+      "id": "lesson_10567b1bd769",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:07:50.294186+00:00",
+      "last_seen": "2026-09-06T12:07:50.294186+00:00"
+    },
+    {
+      "id": "lesson_77c9e6500c68",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:07:50.299673+00:00",
+      "last_seen": "2026-09-06T12:07:50.299673+00:00"
+    },
+    {
+      "id": "lesson_d86d0fd5154d",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:07:50.306891+00:00",
+      "last_seen": "2026-09-06T12:07:50.306891+00:00"
+    },
+    {
+      "id": "lesson_04547d0e62a6",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:07:50.310655+00:00",
+      "last_seen": "2026-09-06T12:07:50.310655+00:00"
+    },
+    {
+      "id": "lesson_697e51b99e8f",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:07:50.316006+00:00",
+      "last_seen": "2026-09-06T12:07:50.316006+00:00"
+    },
+    {
+      "id": "lesson_233d0f4254f3",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:07:50.323918+00:00",
+      "last_seen": "2026-09-06T12:07:50.323918+00:00"
+    },
+    {
+      "id": "lesson_0fe3339eb770",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:07:50.327465+00:00",
+      "last_seen": "2026-09-06T12:07:50.327465+00:00"
+    },
+    {
+      "id": "lesson_9bf3099ecfa7",
+      "issue_type": "number_mismatch",
+      "title": "跨章节数量不一致：跨章节公司名称引用不一致",
+      "description": "跨章节公司名称引用不一致",
+      "rule": "不同章节中出现的同类数量数据必须保持一致。人员数量、设备数量等关键数据在投标函、服务方案、人员配置等章节中必须完全相同。",
+      "keywords": [
+        "不一致",
+        "人员",
+        "数量"
+      ],
+      "applicable_sections": [],
+      "applicable_bid_types": [],
+      "severity": "medium",
+      "directive_text": "生成各章节时须交叉核对关键数量数据，确保全文一致。",
+      "occurrence_count": 1,
+      "first_seen": "2026-09-06T12:07:50.330038+00:00",
+      "last_seen": "2026-09-06T12:07:50.330038+00:00"
     }
   ]
 }

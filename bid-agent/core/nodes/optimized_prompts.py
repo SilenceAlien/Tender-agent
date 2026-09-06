@@ -435,15 +435,3 @@ def get_optimized_section_prompt(section_key: str, requirements_context: str) ->
     return template.format(requirements_context=requirements_context)
 
 
-# ── 旧→新章节映射（兼容过渡期） ──────────────────────────────────────
-
-OLD_TO_NEW_SECTION_MAP = {
-    "ch1_letter": "sec1_bid_letter",
-    "ch2_authorization": "sec3_authorization",
-    "ch3_service": "sec7_service_plan",
-    "ch4_technical": "sec7_service_plan",  # 合并到服务方案
-    "ch5_staffing": "sec7_service_plan",   # 合并到服务方案（六）成员背景
-    "ch6_qualifications": "sec6_qualification",
-    "ch7_schedule": "sec7_service_plan",   # 合并到服务方案
-    "ch8_after_sales": "sec8_emergency",   # 转为应急保障
-}

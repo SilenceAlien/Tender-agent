@@ -104,14 +104,3 @@ def build_llm_for_pipeline(
 
     return llm_fns
 
-
-def get_section_generator_llm() -> Callable[[str], str] | None:
-    """Get the configured LLM function for SectionGenerator."""
-    llm_fns = build_llm_for_pipeline()
-    return llm_fns.get("SectionGenerator")
-
-
-def get_quality_checker_llm() -> Callable[[str], str] | None:
-    """Get the configured LLM function for QualityChecker."""
-    llm_fns = build_llm_for_pipeline()
-    return llm_fns.get("QualityChecker")

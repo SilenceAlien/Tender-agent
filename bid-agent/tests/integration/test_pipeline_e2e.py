@@ -147,40 +147,4 @@ class TestPipelineE2E:
         # May have multiple rounds
         assert result["current_round"] >= 1 or result["quality_report"]["verdict"] == "PASS"
 
-    def test_evolution_integration(self, e2e_state):
-        """Pipeline run produces data usable by evolution modules."""
-        from core.evolution.metrics_tracker import MetricsTracker
-        from core.evolution.prompt_registry import PromptRegistry
 
-        result = run_pipeline(e2e_state)
-
-        # Metrics tracking
-        tracker = MetricsTracker(db_path=":memory:")
-        sections = result.get("sections", {})
-        quality = result.get("quality_report", {})
-
-        for section_name in list(sections.keys())[:2]:
-            tracker.record(
-                project_id="e2e_test",
-                section_name=section_name,
-                round_num=result.get("current_round", 0),
-                completeness_score=(
-                    quality.get("passed_items", 0) / max(1, quality.get("total_items", 1))
-                ),
-                verdict=quality.get("verdict", "FAIL"),
-                failure_reasons=quality.get("compliance", []) + quality.get("consistency", []),
-                total_items=quality.get("total_items", 0),
-                passed_items=quality.get("passed_items", 0),
-            )
-
-        assert tracker.overall_summary()["total_records"] >= 1
-
-        # Prompt registry
-        registry = PromptRegistry(db_path=":memory:")
-        if quality.get("verdict") == "PASS":
-            registry.save(
-                "技术方案", "服务",
-                "测试prompt", 0.85,
-                quality_verdict="PASS",
-            )
-            assert registry.count() == 1

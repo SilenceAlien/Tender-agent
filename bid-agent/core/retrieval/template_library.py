@@ -248,9 +248,6 @@ def get_template_count(bid_type: str) -> int:
     return len(TEMPLATES.get(bid_type, []))
 
 
-def get_template_ids(bid_type: str) -> list[str]:
-    """Return all template IDs for a given type."""
-    return [t["id"] for t in TEMPLATES.get(bid_type, [])]
 
 
 # ── Test verification ──────────────────────────────────────────────────

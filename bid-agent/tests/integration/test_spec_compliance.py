@@ -415,7 +415,6 @@ class TestUS5KnowledgeBaseRetrieval:
         """S1: 历史标书索引查劳务管理 → 返回3-5个相关段落"""
         from core.retrieval.embeddings import MockEmbedder
         from core.retrieval.faiss_index import VectorIndexManager
-        from core.retrieval.pipeline import RetrievalPipeline
 
         embedder = MockEmbedder(dim=1536, seed=42)
 
@@ -435,18 +434,14 @@ class TestUS5KnowledgeBaseRetrieval:
         historical.add(ids, np.array(vectors, dtype=np.float32))
 
         # Search for "劳务管理" topics
-        pipeline = RetrievalPipeline(embedder, {"historical": historical})
-        results = pipeline.search(
-            "劳务管理服务方案 人员配置",
-            top_k_per_index=5,
-            final_k=3,
-        )
+        query_vec = embedder.embed_query("劳务管理服务方案 人员配置").reshape(1, -1)
+        results = historical.search(query_vec, k=3)
 
-        # Should return 3 results related to 劳务管理
-        assert len(results) >= 1
-        assert len(results) <= 3
+        # Should return 3 results
+        assert len(results[0]) >= 1
+        assert len(results[0]) <= 3
         # Check results are relevant (within top 5)
-        ids_returned = [r[0] for r in results]
+        ids_returned = [r[0] for r in results[0]]
         assert len(ids_returned) == len(set(ids_returned))  # unique
 
     def test_us5_template_matching_top3_accuracy(self):

@@ -475,36 +475,4 @@ def update_manifest(
     return manifest
 
 
-def verify_manifest(subtype_dir: Path) -> dict:
-    """校验 manifest.json 中的哈希与实际内容是否一致.
 
-    Returns:
-        {"valid": bool, "mismatches": [str, ...]}
-    """
-    manifest_path = subtype_dir / "manifest.json"
-    if not manifest_path.exists():
-        return {"valid": False, "mismatches": ["manifest.json 不存在"]}
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    mismatches: list[str] = []
-
-    chunks_dir = subtype_dir / "chunks"
-    patterns_dir = subtype_dir / "patterns"
-
-    if chunks_dir.exists():
-        actual_hash = compute_dir_hash(chunks_dir)
-        recorded_hash = manifest.get("chunks_hash", "")
-        if recorded_hash and actual_hash != recorded_hash:
-            mismatches.append(
-                f"chunks_hash 不一致: manifest={recorded_hash}, actual={actual_hash}"
-            )
-
-    if patterns_dir.exists():
-        actual_hash = compute_dir_hash(patterns_dir)
-        recorded_hash = manifest.get("patterns_hash", "")
-        if recorded_hash and actual_hash != recorded_hash:
-            mismatches.append(
-                f"patterns_hash 不一致: manifest={recorded_hash}, actual={actual_hash}"
-            )
-
-    return {"valid": len(mismatches) == 0, "mismatches": mismatches}

@@ -328,8 +328,3 @@ def get_reference_retriever() -> ReferenceRetriever:
         _default_retriever = ReferenceRetriever()
     return _default_retriever
 
-
-def set_reference_retriever(retriever: ReferenceRetriever | None) -> None:
-    """Override the default retriever (useful for testing or custom config)."""
-    global _default_retriever
-    _default_retriever = retriever
