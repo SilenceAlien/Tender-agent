@@ -106,17 +106,10 @@ def get_recent_context_window(
     return [rec for rec in history if rec.get("round", 0) in recent_rounds]
 
 
-def build_feedback_layers(
-    history: list[dict], context_window_size: int = DEFAULT_CONTEXT_WINDOW_SIZE
-) -> dict:
-    """一次性导出三层结构（供下游消费/调试）。"""
-    compressed = compress_feedback_history(history)
-    return {
-        "global_constraints": build_global_constraints(history),
-        "compressed_history": format_compressed_history(compressed),
-        "context_window_size": context_window_size,
-        "recent_context": get_recent_context_window(history, context_window_size),
-    }
+# V2 决策（specs/010 批次1）：原聚合器 build_feedback_layers 已删除——
+# R1 消费侧（section_generator）直接读 state.global_constraints /
+# compressed_history 并调用 get_recent_context_window 窗口化，
+# 聚合器「重新派生」是伪消费，保持零引用故随批次 2 删除（git 历史可找回）。
 
 
 def _learn_consistency_lessons(state: dict, llm_fn: Callable[[str], str] | None = None) -> None:

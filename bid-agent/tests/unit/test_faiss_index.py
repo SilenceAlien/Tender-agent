@@ -251,9 +251,9 @@ class TestAllTypesIndexed:
         """T027: 7 types, each with at least 3 templates."""
         from core.retrieval.template_library import (
             TEMPLATES,
+            check_all_types_indexed,
             get_template_count,
             get_template_types,
-            test_all_types_indexed,
         )
 
         types = get_template_types()
@@ -263,7 +263,7 @@ class TestAllTypesIndexed:
             count = get_template_count(bid_type)
             assert count >= 3, f"{bid_type} has only {count} templates"
 
-        assert test_all_types_indexed() is True
+        assert check_all_types_indexed() is True
 
     def test_template_indices_buildable(self):
         """All 7 indices can be built and searched."""

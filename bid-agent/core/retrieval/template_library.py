@@ -253,8 +253,12 @@ def get_template_count(bid_type: str) -> int:
 # ── Test verification ──────────────────────────────────────────────────
 
 
-def test_all_types_indexed() -> bool:
-    """Verify all 7 types have at least 3 templates. (T027 contract test)"""
+def check_all_types_indexed() -> bool:
+    """Verify all 7 types have at least 3 templates. (T027 contract check)
+
+    命名说明：不以 test_ 开头，避免被 pytest 误收集为测试用例
+    （specs/010-dead-code-cleanup 修复方案 §3.3#3）。
+    """
     for bid_type in TEMPLATES:
         count = get_template_count(bid_type)
         if count < 3:
