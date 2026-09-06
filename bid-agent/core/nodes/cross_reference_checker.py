@@ -26,6 +26,7 @@ import logging
 import re
 from typing import Callable
 
+from core.contract import ProjectContextContract, ContractValidator
 from core.state import AgentState, NodeStatus
 
 logger = logging.getLogger(__name__)
@@ -290,6 +291,88 @@ def _check_contract_deviation(
     return issues
 
 
+# ── Contract validation (ContractValidator wiring) ─────────────────────
+
+
+def _check_contract_validation(
+    sections: dict[str, str],
+    project_contract: dict,
+) -> list[dict]:
+    """Run ContractValidator to check generated content against the project
+    context contract.
+
+    This wires the ContractValidator (core/contract.py) into the cross-reference
+    checker pipeline.  ContractValidator checks six dimensions that the existing
+    _check_contract_deviation (N05) does not cover:
+      1. Project name consistency (regex extraction + similarity ratio)
+      2. Bidder name consistency
+      3. Project location consistency
+      4. Industry attribute consistency
+      5. Forbidden institutions (overlaps with N05 — skipped here to avoid
+         duplicate reports; N05 handles this dimension)
+      6. Duration / warranty period numeric consistency
+
+    Args:
+        sections: {section_name: section_content}
+        project_contract: ProjectContextContract.to_dict() from state
+
+    Returns:
+        List of inconsistency dicts in the same format as other _check_* functions.
+    """
+    issues: list[dict] = []
+
+    if not project_contract:
+        logger.debug("ContractValidator: no project_contract in state, skipping")
+        return issues
+
+    # Reconstruct the contract object from the serialized dict
+    try:
+        contract = ProjectContextContract.from_dict(project_contract)
+    except Exception as e:
+        logger.warning(f"ContractValidator: failed to reconstruct contract: {e}")
+        return issues
+
+    # Skip if contract is not valid (missing required fields)
+    ok, errs = contract.is_valid()
+    if not ok:
+        logger.info(f"ContractValidator: contract incomplete ({errs}), running with reduced checks")
+
+    validator = ContractValidator(contract)
+    report = validator.validate_document(sections)
+
+    # Convert ContractIssue dataclass instances to the inconsistency dict format
+    # used by cross_reference_checker.
+    # Skip forbidden_institution/forbidden_industry categories — already covered
+    # by _check_contract_deviation (N05) above.  Without this filter the same
+    # violation would be reported twice (once by N05, once by ContractValidator).
+    _DUPLICATE_CATEGORIES = {
+        "contract_forbidden_institution",
+        "contract_forbidden_industry",
+    }
+    for chapter, chapter_issues in report.chapter_issues.items():
+        for ci in chapter_issues:
+            if ci.category in _DUPLICATE_CATEGORIES:
+                continue
+            issues.append({
+                "type": ci.category,
+                "field": ci.category.replace("contract_", ""),
+                "detail": ci.message,
+                "section": chapter,
+                "severity": ci.severity,  # "critical" or "warning"
+                "evidence": ci.evidence,
+                "contract_value": ci.contract_value,
+                "found_value": ci.found_value,
+            })
+
+    if issues:
+        logger.info(
+            f"ContractValidator: found {len(issues)} contract deviations "
+            f"({report.critical_count} critical, {report.warning_count} warning)"
+        )
+
+    return issues
+
+
 # ── N06: Technical parameter consistency check ────────────────────────
 
 
@@ -382,8 +465,13 @@ def cross_reference_checker(
     inconsistencies.extend(_check_amount_consistency(sections))
     inconsistencies.extend(_check_date_consistency(sections))
     inconsistencies.extend(_check_document_composition_consistency(sections))
-    # N05: contract deviation check
+    # N05: contract deviation check (forbidden institutions/industries)
     inconsistencies.extend(_check_contract_deviation(sections, project_contract))
+    # ContractValidator: full contract validation (name, bidder, location,
+    # industry, duration — dimensions not covered by N05 above).
+    # Forbidden institution/industry categories are skipped inside
+    # _check_contract_validation to avoid duplicating N05 results.
+    inconsistencies.extend(_check_contract_validation(sections, project_contract))
     # N06: technical parameter consistency check
     inconsistencies.extend(_check_tech_parameter_consistency(sections))
 
